@@ -59,6 +59,8 @@ https://github.com/systemrdl
 ## Programming
 
 * https://github.com/sadhbh-c0d3/lock-free
+* https://tttapa.github.io/Pages/Programming/Cpp/Practices/type-punning.html
+
 
 ## Kafka
 
