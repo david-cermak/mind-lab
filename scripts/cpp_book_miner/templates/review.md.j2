@@ -1,0 +1,40 @@
+# Review: {{ bundle.chapter.title }}
+
+Source: `{{ bundle.chapter.source_path }}` ({{ bundle.chapter.start_line }}–{{ bundle.chapter.end_line }})
+
+{% for c in bundle.candidates %}
+---
+## {{ loop.index }}. {{ c.title }}
+
+Hook: {{ c.hook }}
+
+Tags: {% if c.tags %}{{ c.tags | join(", ") }}{% else %}_none_{% endif %}
+
+Standard: `{{ c.std }}`
+
+Suggested flags:
+{% if c.tuning and c.tuning.flags -%}
+```
+{{ c.tuning.flags | join(" ") }}
+```
+{%- else -%}
+```
+-O0 -std={{ c.std }}
+-O2 -std={{ c.std }}
+```
+{%- endif %}
+
+Notes:
+{{ c.notes }}
+
+Risks:
+{{ c.risks if c.risks else "_none_" }}
+
+Code:
+```cpp
+{{ c.code | safe }}
+```
+
+{% endfor %}
+
+

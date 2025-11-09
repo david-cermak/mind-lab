@@ -1,0 +1,39 @@
+# Default configuration for cpp_book_miner
+#
+# You can override any of these via CLI flags or environment variables where noted.
+
+cpp_standard: "c++20"
+
+paths:
+  # Relative to repo root (current working directory when running CLI)
+  input_book_path: "insights/programming/cpp.md"
+  output_base: "artifacts/cpp_mining"
+  chapters_dir: "artifacts/cpp_mining/chapters"
+  summaries_dir: "artifacts/cpp_mining/summaries"
+  candidates_dir: "artifacts/cpp_mining/candidates"
+  review_dir: "artifacts/cpp_mining/review"
+  refined_dir: "artifacts/cpp_mining/refined"
+
+limits:
+  min_candidates_per_chapter: 1
+  max_candidates_per_chapter: 8
+  max_candidate_lines: 60
+  max_topics: 15
+
+llm:
+  # Environment: set OPENAI_API_KEY. Optionally set OPENAI_BASE_URL
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  temperature_summarize: 0.2
+  temperature_generate: 0.4
+  request_timeout_seconds: 120
+
+compiler_presets:
+  - name: "O0"
+    flags: ["-O0", "-std=${STD}"]
+  - name: "O2"
+    flags: ["-O2", "-std=${STD}"]
+  - name: "san"
+    flags: ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-std=${STD}"]
+
+

@@ -1,0 +1,37 @@
+---
+title: "{{ title }}"
+tags: {{ tags }}
+std: "{{ std }}"
+chapter: "{{ chapter_title }}"
+---
+
+{{ hook }}
+
+### Code
+
+```cpp
+// Try with -O0 and -O2 if suggested
+{{ notes }}
+```
+
+```cpp
+{{ caller() if caller else "" }}
+```
+
+```cpp
+// See test.cpp in this folder
+```
+
+### Suggested setup
+
+{% if tuning and tuning.flags -%}
+- Flags: `{{ tuning.flags | join(" ") }}`
+{%- else -%}
+- Flags: `-O0 -std={{ std }}` and `-O2 -std={{ std }}`
+{%- endif %}
+
+{% if tuning and tuning.compilers -%}
+- Compilers: {{ tuning.compilers | join(", ") }}
+{%- endif %}
+
+
