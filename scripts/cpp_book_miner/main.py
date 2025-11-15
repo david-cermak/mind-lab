@@ -120,6 +120,15 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     # Enable prompt debugging without hitting the network
     config["debug_llm"] = bool(getattr(args, "debug_llm", False))
     config["debug_llm_output"] = bool(getattr(args, "debug_llm_output", False))
+    raw_override: str | None = None
+    if getattr(args, "raw_file", ""):
+        with open(args.raw_file, "r", encoding="utf-8") as f:
+            raw_override = f.read()
+        # Ensure we don't try to "debug prompt" when using override
+        config["debug_llm"] = False
+    elif getattr(args, "paste_raw", False):
+        raw_override = sys.stdin.read()
+        config["debug_llm"] = False
     paths = _resolve_paths(config)
     idx = _read_index(paths)
     # Restrict to a single chapter if requested or when slicing is used
@@ -141,6 +150,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
                 chapter_text=text,
                 out_dir=paths["summaries_dir"],
                 config=config,
+                raw_override=raw_override,
             )
             print(f"Summarized {out_id}: {len(summary.topics)} topics")
     except RuntimeError as e:
@@ -158,6 +168,14 @@ def cmd_generate(args: argparse.Namespace) -> None:
     config = load_config(Path(args.config))
     config["debug_llm"] = bool(getattr(args, "debug_llm", False))
     config["debug_llm_output"] = bool(getattr(args, "debug_llm_output", False))
+    raw_override: str | None = None
+    if getattr(args, "raw_file", ""):
+        with open(args.raw_file, "r", encoding="utf-8") as f:
+            raw_override = f.read()
+        config["debug_llm"] = False
+    elif getattr(args, "paste_raw", False):
+        raw_override = sys.stdin.read()
+        config["debug_llm"] = False
     paths = _resolve_paths(config)
     idx = _read_index(paths)
     # Restrict to a single chapter if requested or when slicing is used
@@ -194,6 +212,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
                 topics=topics,
                 out_dir=paths["candidates_dir"],
                 config=config,
+                raw_override=raw_override,
             )
             print(f"Generated {len(candidates)} candidates for {chapter_id_for_candidates}")
     except RuntimeError as e:
@@ -280,6 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp_sum.add_argument("--end-line", type=int, default=0, help="End line within chapter (inclusive)")
     sp_sum.add_argument("--debug-llm", action="store_true", help="Print LLM prompts and skip API calls")
     sp_sum.add_argument("--debug-llm-output", action="store_true", help="Print and persist raw LLM outputs")
+    sp_sum.add_argument("--paste-raw", action="store_true", help="Read raw LLM output from stdin instead of calling LLM")
+    sp_sum.add_argument("--raw-file", type=str, default="", help="Path to file containing raw LLM output to parse")
     sp_sum.set_defaults(func=cmd_summarize)
     sp_gen = sub.add_parser("generate", help="Generate candidates")
     sp_gen.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
@@ -289,6 +310,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp_gen.add_argument("--end-line", type=int, default=0, help="End line within chapter (inclusive)")
     sp_gen.add_argument("--debug-llm", action="store_true", help="Print LLM prompts and skip API calls")
     sp_gen.add_argument("--debug-llm-output", action="store_true", help="Print and persist raw LLM outputs")
+    sp_gen.add_argument("--paste-raw", action="store_true", help="Read raw LLM output from stdin instead of calling LLM")
+    sp_gen.add_argument("--raw-file", type=str, default="", help="Path to file containing raw LLM output to parse")
     sp_gen.set_defaults(func=cmd_generate)
     sp_render = sub.add_parser("render", help="Render review bundles")
     sp_render.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")

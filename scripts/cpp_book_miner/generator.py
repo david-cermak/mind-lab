@@ -131,6 +131,7 @@ def run_summarization_for_chapter(
     chapter_text: str,
     out_dir: Path,
     config: Dict[str, Any],
+    raw_override: str | None = None,
 ) -> ChapterSummary:
     ensure_dir(out_dir)
     llm = LLMClient(
@@ -155,10 +156,13 @@ def run_summarization_for_chapter(
         print(json.dumps({"debug_llm": True, "phase": "summarize", "payload": debug_payload}, indent=2))
         # Return an empty summary to keep pipeline shape without external calls
         return ChapterSummary(chapter_id=chapter_id, title=chapter_title, topics=[])
-    raw = llm.chat(
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=config["llm"]["temperature_summarize"],
-    )
+    if raw_override is not None:
+        raw = raw_override
+    else:
+        raw = llm.chat(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=config["llm"]["temperature_summarize"],
+        )
     if config.get("debug_llm_output", False):
         try:
             debug_out_path = out_dir / f"{chapter_id}.raw.txt"
@@ -200,6 +204,7 @@ def run_candidates_for_chapter(
     topics: List[str],
     out_dir: Path,
     config: Dict[str, Any],
+    raw_override: str | None = None,
 ) -> List[Candidate]:
     ensure_dir(out_dir)
     llm = LLMClient(
@@ -227,10 +232,13 @@ def run_candidates_for_chapter(
         }
         print(json.dumps({"debug_llm": True, "phase": "generate", "payload": debug_payload}, indent=2))
         return []
-    raw = llm.chat(
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=config["llm"]["temperature_generate"],
-    )
+    if raw_override is not None:
+        raw = raw_override
+    else:
+        raw = llm.chat(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=config["llm"]["temperature_generate"],
+        )
     if config.get("debug_llm_output", False):
         try:
             debug_out_path = out_dir / f"{chapter_id}.raw.txt"
@@ -251,26 +259,53 @@ def run_candidates_for_chapter(
             )
         except Exception as e:
             print(f"[debug_llm_output] Failed to persist raw generate output: {e}", file=sys.stderr)
+    items: List[Candidate] = []
+    rejected: List[Dict[str, Any]] = []
     try:
         data = _loads_relaxed_json(raw)
         if isinstance(data, dict):
             data = data.get("candidates", [])
-        items = []
+        if not isinstance(data, list):
+            data = []
         for obj in data:
             if not isinstance(obj, dict):
+                rejected.append({"error": "not an object", "raw": obj})
                 continue
             # Ensure required fields
             obj.setdefault("tags", [])
             obj.setdefault("std", config["cpp_standard"])
             obj["chapter_id"] = chapter_id
-            items.append(Candidate.model_validate(obj))
-    except Exception:
-        items = []
+            try:
+                items.append(Candidate.model_validate(obj))
+            except Exception as e:
+                rejected.append({"error": str(e), "raw": obj})
+    except Exception as e:
+        # Whole-parse failure
+        rejected.append({"error": f"parse_failed: {e}", "raw": raw[:1000] + ("..." if len(raw) > 1000 else "")})
     # Persist JSONL
     out_path = out_dir / f"{chapter_id}.jsonl"
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(to_jsonl(items))
         f.write("\n" if items else "")
+    # Persist rejects for debugging if any
+    if rejected:
+        rej_path = out_dir / f"{chapter_id}.rejected.jsonl"
+        with open(rej_path, "w", encoding="utf-8") as f:
+            for r in rejected:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(
+            json.dumps(
+                {
+                    "phase": "generate",
+                    "chapter_id": chapter_id,
+                    "accepted": len(items),
+                    "rejected": len(rejected),
+                    "rejected_path": str(rej_path),
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
     return items
 
 

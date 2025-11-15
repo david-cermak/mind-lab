@@ -16,7 +16,7 @@ paths:
 
 limits:
   min_candidates_per_chapter: 1
-  max_candidates_per_chapter: 8
+  max_candidates_per_chapter: 5
   max_candidate_lines: 60
   max_topics: 15
 
