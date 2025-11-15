@@ -13,6 +13,7 @@ paths:
   candidates_dir: "artifacts/cpp_mining/candidates"
   review_dir: "artifacts/cpp_mining/review"
   refined_dir: "artifacts/cpp_mining/refined"
+  citations_dir: "artifacts/cpp_mining/citations"
 
 limits:
   min_candidates_per_chapter: 1

@@ -10,10 +10,10 @@ import re
 
 import yaml
 
-from .models import ChapterIndex, ChapterRef, ChapterSummary, Candidate, from_jsonl
+from .models import ChapterIndex, ChapterRef, ChapterSummary, Candidate, ChapterCitations, from_jsonl
 from .splitter import split_book_markdown
-from .generator import load_config, run_summarization_for_chapter, run_candidates_for_chapter
-from .renderer import render_review_markdown, export_post
+from .generator import load_config, run_summarization_for_chapter, run_candidates_for_chapter, run_citations_for_chapter
+from .renderer import render_review_markdown, export_post, render_citations_markdown
 from .generator import run_refine_for_candidates
 
 
@@ -32,6 +32,7 @@ def _resolve_paths(config: Dict[str, Any]) -> Dict[str, Path]:
         "candidates_dir": base / paths["candidates_dir"],
         "review_dir": base / paths["review_dir"],
         "refined_dir": base / paths["refined_dir"],
+        "citations_dir": base / paths["citations_dir"],
     }
 
 def _slugify(text: str) -> str:
@@ -115,6 +116,59 @@ def _read_index(paths: Dict[str, Path]) -> ChapterIndex:
     return ChapterIndex.model_validate(data)
 
 
+def cmd_citations(args: argparse.Namespace) -> None:
+    config = load_config(Path(args.config))
+    # Enable prompt debugging without hitting the network
+    config["debug_llm"] = bool(getattr(args, "debug_llm", False))
+    config["debug_llm_output"] = bool(getattr(args, "debug_llm_output", False))
+    raw_override: str | None = None
+    if getattr(args, "raw_file", ""):
+        with open(args.raw_file, "r", encoding="utf-8") as f:
+            raw_override = f.read()
+        # Ensure we don't try to "debug prompt" when using override
+        config["debug_llm"] = False
+    elif getattr(args, "paste_raw", False):
+        raw_override = sys.stdin.read()
+        config["debug_llm"] = False
+    paths = _resolve_paths(config)
+    idx = _read_index(paths)
+    # Restrict to a single chapter if requested or when slicing is used
+    chapters: List[ChapterRef]
+    if args.chapter:
+        chapters = [c for c in idx.chapters if c.chapter_id == args.chapter]
+    elif args.subheading or args.start_line or args.end_line or args.first:
+        chapters = idx.chapters[:1]
+    else:
+        chapters = idx.chapters
+    try:
+        for chapter in chapters:
+            # Get original chapter text to compute line offset
+            with open(chapter.output_markdown_path, "r", encoding="utf-8") as f:
+                original_text = f.read()
+            text = _chapter_text_with_slice(chapter, args)
+            suffix = _build_suffix(args)
+            out_id = chapter.chapter_id + suffix
+            # Calculate line offset if slicing was used
+            line_offset = 0
+            if getattr(args, "start_line", 0):
+                # Count lines before the slice in original text
+                original_lines = original_text.splitlines(keepends=False)
+                line_offset = max(0, getattr(args, "start_line", 1) - 1)
+            citations = run_citations_for_chapter(
+                chapter_id=out_id,
+                chapter_title=chapter.title,
+                chapter_text=text,
+                out_dir=paths["citations_dir"],
+                config=config,
+                raw_override=raw_override,
+                line_offset=line_offset,
+            )
+            print(f"Extracted {len(citations.citations)} citations from {out_id}")
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return
+
+
 def cmd_summarize(args: argparse.Namespace) -> None:
     config = load_config(Path(args.config))
     # Enable prompt debugging without hitting the network
@@ -162,6 +216,12 @@ def _load_summary(paths: Dict[str, Path], chapter_id: str) -> ChapterSummary:
     with open(paths["summaries_dir"] / f"{chapter_id}.json", "r", encoding="utf-8") as f:
         data = json.load(f)
     return ChapterSummary.model_validate(data)
+
+
+def _load_citations(paths: Dict[str, Path], chapter_id: str) -> ChapterCitations:
+    with open(paths["citations_dir"] / f"{chapter_id}.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return ChapterCitations.model_validate(data)
 
 
 def cmd_generate(args: argparse.Namespace) -> None:
@@ -250,6 +310,31 @@ def cmd_render_review(args: argparse.Namespace) -> None:
         print(f"Wrote review bundle: {out_path}")
 
 
+def cmd_render_citations(args: argparse.Namespace) -> None:
+    config = load_config(Path(args.config))
+    paths = _resolve_paths(config)
+    idx = _read_index(paths)
+    # Restrict which chapters to render if requested
+    chapters: List[ChapterRef]
+    if getattr(args, "chapter", ""):
+        chapters = [c for c in idx.chapters if c.chapter_id == args.chapter]
+    elif getattr(args, "first", False):
+        chapters = idx.chapters[:1]
+    else:
+        chapters = idx.chapters
+    for chapter in chapters:
+        try:
+            citations = _load_citations(paths, chapter.chapter_id)
+        except FileNotFoundError:
+            print(f"Warning: No citations found for {chapter.chapter_id}. Run 'citations' command first.", file=sys.stderr)
+            continue
+        out_path = paths["citations_dir"] / f"{chapter.chapter_id}.md"
+        render_citations_markdown(
+            chapter=chapter, citations=citations, out_path=out_path
+        )
+        print(f"Wrote citations markdown: {out_path}")
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     config = load_config(Path(args.config))
     paths = _resolve_paths(config)
@@ -291,6 +376,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("split", help="Split book into chapters").set_defaults(func=cmd_split)
+    sp_cit = sub.add_parser("citations", help="Extract interesting quotations and citations per chapter")
+    sp_cit.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
+    sp_cit.add_argument("--first", action="store_true", help="Use first chapter only")
+    sp_cit.add_argument("--subheading", type=str, default="", help="Subsection heading to slice inside chapter")
+    sp_cit.add_argument("--start-line", type=int, default=0, help="Start line within chapter (1-based)")
+    sp_cit.add_argument("--end-line", type=int, default=0, help="End line within chapter (inclusive)")
+    sp_cit.add_argument("--debug-llm", action="store_true", help="Print LLM prompts and skip API calls")
+    sp_cit.add_argument("--debug-llm-output", action="store_true", help="Print and persist raw LLM outputs")
+    sp_cit.add_argument("--paste-raw", action="store_true", help="Read raw LLM output from stdin instead of calling LLM")
+    sp_cit.add_argument("--raw-file", type=str, default="", help="Path to file containing raw LLM output to parse")
+    sp_cit.set_defaults(func=cmd_citations)
     sp_sum = sub.add_parser("summarize", help="Summarize topics per chapter")
     sp_sum.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
     sp_sum.add_argument("--first", action="store_true", help="Use first chapter only")
@@ -320,6 +416,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp_render.add_argument("--debug-llm", action="store_true", help=argparse.SUPPRESS)
     sp_render.add_argument("--debug-llm-output", action="store_true", help=argparse.SUPPRESS)
     sp_render.set_defaults(func=cmd_render_review)
+    sp_render_cit = sub.add_parser("render-citations", help="Render citations markdown")
+    sp_render_cit.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
+    sp_render_cit.add_argument("--first", action="store_true", help="Render first chapter only")
+    # Accept debug flags here so users can pass them after the subcommand; they are no-ops for render
+    sp_render_cit.add_argument("--debug-llm", action="store_true", help=argparse.SUPPRESS)
+    sp_render_cit.add_argument("--debug-llm-output", action="store_true", help=argparse.SUPPRESS)
+    sp_render_cit.set_defaults(func=cmd_render_citations)
     sp_export = sub.add_parser("export", help="Export accepted posts")
     sp_export.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
     sp_export.add_argument("--first", action="store_true", help="Export first chapter only")

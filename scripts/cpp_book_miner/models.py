@@ -23,6 +23,18 @@ class ChapterSummary(BaseModel):
     topics: List[str]
 
 
+class Citation(BaseModel):
+    citation: str = Field(description="The exact wording of the quotation/citation")
+    line_number: int = Field(description="Line number in the chapter where this citation appears")
+    context: str = Field(description="Summary of the context surrounding this citation (max 200 words)")
+
+
+class ChapterCitations(BaseModel):
+    chapter_id: str
+    title: str
+    citations: List[Citation] = Field(default_factory=list)
+
+
 class CompilerTuning(BaseModel):
     description: Optional[str] = None
     compilers: Optional[List[str]] = None

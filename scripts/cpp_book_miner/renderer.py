@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from .models import ChapterRef, Candidate, ReviewBundle, from_jsonl
+from .models import ChapterRef, Candidate, ReviewBundle, ChapterCitations, from_jsonl
 
 
 def _env(templates_dir: Path) -> Environment:
@@ -57,5 +57,32 @@ def export_post(candidate: Candidate, base_dir: Path, chapter_title: str) -> Non
     post_path = dir_path / "post.md"
     with open(post_path, "w", encoding="utf-8") as f:
         f.write(post_md)
+
+
+def render_citations_markdown(
+    chapter: ChapterRef,
+    citations: ChapterCitations,
+    out_path: Path,
+) -> None:
+    """
+    Render citations to a markdown file with citations, line numbers, and context.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(f"# Citations from Chapter: {chapter.title}\n\n")
+        f.write(f"**Chapter ID:** {chapter.chapter_id}\n\n")
+        f.write(f"**Total Citations:** {len(citations.citations)}\n\n")
+        f.write("---\n\n")
+        
+        if not citations.citations:
+            f.write("*No citations found in this chapter.*\n")
+            return
+        
+        for i, citation in enumerate(citations.citations, 1):
+            f.write(f"## Citation {i}\n\n")
+            f.write(f"**Line {citation.line_number}**\n\n")
+            f.write(f"> {citation.citation}\n\n")
+            f.write(f"**Context:**\n\n{citation.context}\n\n")
+            f.write("---\n\n")
 
 

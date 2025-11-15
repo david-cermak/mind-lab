@@ -117,3 +117,47 @@ def refine_user_prompt(
     )
 
 
+def citation_system_prompt() -> str:
+    return (
+        "You are an expert at identifying memorable quotations, philosophical insights, and "
+        "thought-provoking statements in technical writing. Look for:\n"
+        "- Memorable quotes or aphorisms (like 'with great power comes great responsibility')\n"
+        "- Philosophical or insightful statements about programming concepts\n"
+        "- Thought-provoking observations about code constructs or language design\n"
+        "- Statements that capture deeper wisdom or principles\n"
+        "Focus on statements that are quotable, insightful, or convey important principles."
+    )
+
+
+def citation_user_prompt(chapter_title: str, chapter_text: str, chapter_lines: List[str]) -> str:
+    # Create a numbered version of the text for line reference
+    numbered_lines = [f"{i+1:4d}|{line}" for i, line in enumerate(chapter_lines)]
+    numbered_text = "\n".join(numbered_lines)
+    
+    return (
+        f"Chapter: {chapter_title}\n\n"
+        "Task: Extract interesting quotations, citations, and philosophical insights from this chapter.\n\n"
+        "Look for:\n"
+        "- Memorable quotes or aphorisms\n"
+        "- Philosophical statements about programming concepts\n"
+        "- Thought-provoking observations about code constructs\n"
+        "- Statements that capture deeper wisdom or principles\n\n"
+        "For each citation found:\n"
+        "- Extract the EXACT wording (preserve punctuation and capitalization)\n"
+        "- Note the line number where it appears (from the numbered text below)\n"
+        "- Provide context: a summary (max 200 words) explaining what the citation is about and why it's interesting\n\n"
+        "Return JSON only with this structure:\n"
+        "{\n"
+        '  "citations": [\n'
+        "    {\n"
+        '      "citation": "exact wording here",\n'
+        '      "line_number": 123,\n'
+        '      "context": "summary of context (max 200 words)"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Chapter content (with line numbers):\n"
+        f"{numbered_text}\n"
+    )
+
+

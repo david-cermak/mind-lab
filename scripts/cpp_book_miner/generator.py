@@ -10,7 +10,7 @@ import httpx
 import yaml
 import sys
 
-from .models import ChapterSummary, Candidate, to_jsonl
+from .models import ChapterSummary, Candidate, ChapterCitations, Citation, to_jsonl
 from .prompts import (
     summarization_system_prompt,
     summarization_user_prompt,
@@ -19,6 +19,8 @@ from .prompts import (
     PATTERN_LIBRARY,
     refine_system_prompt,
     refine_user_prompt,
+    citation_system_prompt,
+    citation_user_prompt,
 )
 
 
@@ -195,6 +197,112 @@ def run_summarization_for_chapter(
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(summary.model_dump(), f, indent=2, ensure_ascii=False)
     return summary
+
+
+def run_citations_for_chapter(
+    chapter_id: str,
+    chapter_title: str,
+    chapter_text: str,
+    out_dir: Path,
+    config: Dict[str, Any],
+    raw_override: str | None = None,
+    line_offset: int = 0,
+) -> ChapterCitations:
+    ensure_dir(out_dir)
+    llm = LLMClient(
+        model=config["llm"]["model"],
+        timeout_seconds=config["llm"]["request_timeout_seconds"],
+        base_url=config.get("llm", {}).get("base_url"),
+    )
+    # Split text into lines for line numbering
+    chapter_lines = chapter_text.splitlines(keepends=False)
+    system = citation_system_prompt()
+    user = citation_user_prompt(
+        chapter_title=chapter_title,
+        chapter_text=chapter_text,
+        chapter_lines=chapter_lines,
+    )
+    if config.get("debug_llm", False):
+        # Print the exact prompt payload we'd send
+        debug_payload = {
+            "url": f"{llm.base_url}/chat/completions",
+            "model": llm.model,
+            "temperature": config["llm"]["temperature_summarize"],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        print(json.dumps({"debug_llm": True, "phase": "citations", "payload": debug_payload}, indent=2))
+        # Return an empty citations object to keep pipeline shape without external calls
+        return ChapterCitations(chapter_id=chapter_id, title=chapter_title, citations=[])
+    if raw_override is not None:
+        raw = raw_override
+    else:
+        raw = llm.chat(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=config["llm"]["temperature_summarize"],
+        )
+    if config.get("debug_llm_output", False):
+        try:
+            debug_out_path = out_dir / f"{chapter_id}.raw.txt"
+            with open(debug_out_path, "w", encoding="utf-8") as f:
+                f.write(raw)
+            print(
+                json.dumps(
+                    {
+                        "debug_llm_output": True,
+                        "phase": "citations",
+                        "chapter_id": chapter_id,
+                        "raw_path": str(debug_out_path),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"[debug_llm_output] Failed to persist raw citations output: {e}", file=sys.stderr)
+    citations: List[Citation] = []
+    try:
+        parsed = _loads_relaxed_json(raw)
+        citations_data = parsed.get("citations", [])
+        if not isinstance(citations_data, list):
+            citations_data = []
+        for cit_data in citations_data:
+            if not isinstance(cit_data, dict):
+                continue
+            # Ensure required fields and validate line_number
+            citation_text = cit_data.get("citation", "").strip()
+            line_number = cit_data.get("line_number", 0)
+            context = cit_data.get("context", "").strip()
+            # Validate line_number is within bounds (relative to sliced text)
+            if line_number < 1 or line_number > len(chapter_lines):
+                continue
+            if not citation_text:
+                continue
+            # Adjust line number by offset (for slicing)
+            adjusted_line_number = line_number + line_offset
+            # Truncate context to 200 words if needed
+            words = context.split()
+            if len(words) > 200:
+                context = " ".join(words[:200]) + "..."
+            try:
+                citations.append(
+                    Citation(
+                        citation=citation_text,
+                        line_number=adjusted_line_number,
+                        context=context,
+                    )
+                )
+            except Exception as e:
+                # Skip invalid citations
+                print(f"[citations] Skipping invalid citation: {e}", file=sys.stderr)
+                continue
+    except Exception as e:
+        print(f"[citations] Failed to parse citations: {e}", file=sys.stderr)
+    result = ChapterCitations(chapter_id=chapter_id, title=chapter_title, citations=citations)
+    out_path = out_dir / f"{chapter_id}.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result.model_dump(), f, indent=2, ensure_ascii=False)
+    return result
 
 
 def run_candidates_for_chapter(
