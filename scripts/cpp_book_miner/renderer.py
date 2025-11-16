@@ -63,11 +63,37 @@ def render_citations_markdown(
     chapter: ChapterRef,
     citations: ChapterCitations,
     out_path: Path,
+    context_lines: int = 5,
 ) -> None:
     """
     Render citations to a markdown file with citations, line numbers, and context.
+    
+    Args:
+        chapter: Chapter reference containing the path to the chapter file
+        citations: ChapterCitations object with extracted citations
+        out_path: Path to write the output markdown file
+        context_lines: Number of lines before and after the citation to include (default: 5)
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Read the chapter file to extract actual text
+    chapter_lines = []
+    try:
+        with open(chapter.output_markdown_path, "r", encoding="utf-8") as chapter_file:
+            chapter_lines = chapter_file.readlines()
+    except FileNotFoundError:
+        # Fallback: try relative path from citations dir
+        chapter_path = Path(chapter.output_markdown_path)
+        if not chapter_path.exists():
+            # Try to find it relative to citations dir
+            citations_dir = out_path.parent
+            # Assuming chapters_dir is sibling to citations_dir
+            chapters_dir = citations_dir.parent / "chapters"
+            chapter_path = chapters_dir / f"{chapter.chapter_id}.md"
+        if chapter_path.exists():
+            with open(chapter_path, "r", encoding="utf-8") as chapter_file:
+                chapter_lines = chapter_file.readlines()
+    
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(f"# Citations from Chapter: {chapter.title}\n\n")
         f.write(f"**Chapter ID:** {chapter.chapter_id}\n\n")
@@ -82,7 +108,30 @@ def render_citations_markdown(
             f.write(f"## Citation {i}\n\n")
             f.write(f"**Line {citation.line_number}**\n\n")
             f.write(f"> {citation.citation}\n\n")
-            f.write(f"**Context:**\n\n{citation.context}\n\n")
+            
+            # Extract actual text from the book around the citation line
+            if chapter_lines:
+                line_idx = citation.line_number - 1  # Convert to 0-based index
+                if 0 <= line_idx < len(chapter_lines):
+                    start_idx = max(0, line_idx - context_lines)
+                    end_idx = min(len(chapter_lines), line_idx + context_lines + 1)
+                    context_text_lines = chapter_lines[start_idx:end_idx]
+                    
+                    # Find the citation line within the context
+                    citation_line_in_context = line_idx - start_idx
+                    
+                    f.write(f"**Actual Text from Book:**\n\n")
+                    f.write("```\n")
+                    for j, line in enumerate(context_text_lines):
+                        line_num = start_idx + j + 1  # 1-based line number
+                        # Highlight the citation line
+                        if j == citation_line_in_context:
+                            f.write(f"{line_num:4d}|> {line.rstrip()}\n")
+                        else:
+                            f.write(f"{line_num:4d}|  {line.rstrip()}\n")
+                    f.write("```\n\n")
+            
+            f.write(f"**Context Summary:**\n\n{citation.context}\n\n")
             f.write("---\n\n")
 
 

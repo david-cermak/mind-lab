@@ -322,6 +322,7 @@ def cmd_render_citations(args: argparse.Namespace) -> None:
         chapters = idx.chapters[:1]
     else:
         chapters = idx.chapters
+    context_lines = getattr(args, "context_lines", 5)
     for chapter in chapters:
         try:
             citations = _load_citations(paths, chapter.chapter_id)
@@ -330,7 +331,7 @@ def cmd_render_citations(args: argparse.Namespace) -> None:
             continue
         out_path = paths["citations_dir"] / f"{chapter.chapter_id}.md"
         render_citations_markdown(
-            chapter=chapter, citations=citations, out_path=out_path
+            chapter=chapter, citations=citations, out_path=out_path, context_lines=context_lines
         )
         print(f"Wrote citations markdown: {out_path}")
 
@@ -419,6 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_render_cit = sub.add_parser("render-citations", help="Render citations markdown")
     sp_render_cit.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
     sp_render_cit.add_argument("--first", action="store_true", help="Render first chapter only")
+    sp_render_cit.add_argument("--context-lines", type=int, default=5, help="Number of lines before and after citation to include (default: 5)")
     # Accept debug flags here so users can pass them after the subcommand; they are no-ops for render
     sp_render_cit.add_argument("--debug-llm", action="store_true", help=argparse.SUPPRESS)
     sp_render_cit.add_argument("--debug-llm-output", action="store_true", help=argparse.SUPPRESS)
