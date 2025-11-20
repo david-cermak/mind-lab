@@ -1,0 +1,5 @@
+PyMuPDF==1.26.6
+Pillow==10.4.0
+pytesseract==0.3.10
+openai>=2.0.0
+
