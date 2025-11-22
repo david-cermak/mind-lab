@@ -1,0 +1,3 @@
+Pillow>=10.4
+openai>=2.0
+
