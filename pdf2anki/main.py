@@ -114,17 +114,38 @@ def main():
             
         elif item_type == "image_occlusion":
             img_id = item.get("image_id")
-            ocr_path = Path(item.get("ocr_source"))
+            ocr_source = item.get("ocr_source")
             img_rel_path = item.get("image_path")
             
-            if not img_rel_path or not ocr_path.exists():
+            if not img_rel_path or not ocr_source:
+                continue
+            
+            # Resolve OCR path - handle various formats
+            ocr_path = Path(ocr_source)
+            
+            if ocr_path.is_absolute():
+                # Absolute path - use as-is if it exists
+                if not ocr_path.exists():
+                    # Try relative to output_dir if absolute path doesn't exist
+                    ocr_path = args.output_dir / "ocr" / ocr_path.name
+            else:
+                # Relative path - check if it starts with "output/" and replace with actual output_dir
+                ocr_str = str(ocr_path)
+                if ocr_str.startswith("output/"):
+                    # Replace "output/" prefix with actual output_dir
+                    ocr_path = args.output_dir / ocr_str[7:]  # Remove "output/" prefix (7 chars)
+                elif ocr_str.startswith("ocr/"):
+                    # Just "ocr/..." - prepend output_dir
+                    ocr_path = args.output_dir / ocr_path
+                else:
+                    # Other relative path - try relative to output_dir
+                    ocr_path = args.output_dir / ocr_path
+            
+            if not ocr_path.exists():
+                logging.warning(f"OCR file not found: {ocr_path} for {img_id} (source: {ocr_source})")
                 continue
                 
             img_path = args.output_dir / img_rel_path
-            
-            # Verify with Vision LLM (Optional step 4 integrated here)
-            # verification = vision.analyze_image_context(...)
-            # if not verification.get("suitable_for_occlusion"): continue
             
             # Generate Occlusion
             try:
@@ -136,19 +157,64 @@ def main():
                     from PIL import Image
                     with Image.open(img_path) as img:
                         w, h = img.size
-                        
+                
+                # Get page text from metadata for vision LLM context
+                page_text = ""
+                metadata_path = args.output_dir / "metadata.jsonl"
+                if metadata_path.exists():
+                    with open(metadata_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip():
+                                record = json.loads(line)
+                                if record.get("id") == img_id:
+                                    page_text = record.get("page_text", "")
+                                    break
+                
+                # Call vision LLM to get semantic groups
+                semantic_groups = None
+                vision_description = None
+                try:
+                    logging.info(f"Calling vision LLM for {img_id}...")
+                    ocr_tokens = ocr_data.get("tokens", [])
+                    vision_result = vision.analyze_image_context(
+                        img_path,
+                        page_text,
+                        ocr_tokens,
+                        model=args.vision_model,
+                        base_url=args.base_url,
+                        api_key=args.api_key,
+                    )
+                    
+                    if "error" not in vision_result:
+                        semantic_groups = vision_result.get("groups")
+                        vision_description = vision_result.get("description")
+                        if semantic_groups:
+                            logging.info(f"Vision LLM provided {len(semantic_groups)} semantic groups for {img_id}")
+                        else:
+                            logging.warning(f"Vision LLM returned no groups for {img_id}, using spatial-only")
+                    else:
+                        logging.warning(f"Vision LLM error for {img_id}: {vision_result.get('error')}, using spatial-only")
+                except Exception as e:
+                    logging.warning(f"Vision LLM call failed for {img_id}: {e}, using spatial-only grouping")
+                
+                # Generate occlusion with semantic groups if available
                 occlusion_data = occlusion.generate_occlusion_card_data(
-                    ocr_data, w, h, min_confidence=75.0
+                    ocr_data, w, h, min_confidence=75.0, semantic_groups=semantic_groups
                 )
                 
                 if occlusion_data["rectangles"]:
+                    # Use vision description as back_extra if available
+                    back_extra = vision_description if vision_description else None
+                    
                     deck_builder.add_occlusion_note(
                         markup=occlusion_data["markup"],
                         image_path=img_path,
                         header=f"Diagram (Page {page_num})",
+                        back_extra=back_extra,
                         tags=["pdf-import", "occlusion"]
                     )
-                    logging.info(f"Added occlusion card for {img_id}")
+                    method = occlusion_data.get("grouping_method", "unknown")
+                    logging.info(f"Added occlusion card for {img_id} ({method}, {occlusion_data['group_count']} groups)")
             except Exception as e:
                 logging.error(f"Failed to process occlusion for {img_id}: {e}")
 

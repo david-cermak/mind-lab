@@ -72,7 +72,7 @@ pdf2anki/
 
 **Purpose:** Use vision LLM to semantically group OCR labels for better occlusion masks.
 
-**Status:** Currently available via debug tool only. Not yet integrated into main pipeline (see `main.py` lines 125-127).
+**Status:** ✅ Integrated into main pipeline. Called automatically for each `image_occlusion` card.
 
 **Input:**
 - Image path
@@ -94,6 +94,12 @@ pdf2anki/
   "group_labels": ["Title group", "Left labels", ...]
 }
 ```
+
+**Integration:**
+- Called automatically in `main.py` for each `image_occlusion` plan item
+- Semantic groups are merged with spatial grouping in `generators/occlusion.py`
+- If vision LLM fails or returns no groups, falls back to spatial-only grouping
+- Vision description is used as `back_extra` in occlusion cards
 
 **Token Estimation:**
 - System: ~19 tokens
@@ -123,9 +129,9 @@ pdf2anki/
 - Anki markup: `{{c1::image-occlusion:rect:left=X:top=Y:width=W:height=H:oi=1}}`
 
 **Current Implementation:**
-- Uses spatial-only grouping (distance-based algorithm)
-- Vision LLM semantic grouping is available via `debug_occlusion.py` but not yet integrated into main pipeline
-- Future: Use vision LLM `groups` output to refine spatial groups for better semantic coherence
+- Uses semantic grouping from vision LLM when available, merged with spatial grouping
+- Falls back to spatial-only grouping if vision LLM fails or returns no groups
+- Semantic groups refine spatial groups: tokens in the same semantic group are grouped together, with spatial grouping applied within each semantic group to handle multi-word labels
 
 ### Deck Builder (`utils/anki_db.py`)
 
@@ -220,11 +226,12 @@ Shows:
 
 ## Future Enhancements
 
-- [ ] Use vision LLM groups to refine spatial grouping
+- [x] Use vision LLM groups to refine spatial grouping
 - [ ] Multi-page text segmentation for better Q&A context
 - [ ] Support for other note types (cloze, basic-optional-reversed)
 - [ ] Batch processing with progress tracking
 - [ ] Cost estimation before running pipeline
+- [ ] Option to skip vision LLM calls for faster processing (spatial-only mode)
 
 ## Dependencies
 

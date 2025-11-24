@@ -1,5 +1,5 @@
 """
-Generate Q&A flashcards from text using an LLM.
+Generate Q&A flashlcards from text using an LLM.
 """
 
 import json

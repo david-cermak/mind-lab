@@ -112,6 +112,105 @@ def group_tokens_spatially(tokens: Sequence[OcrToken], threshold: float) -> List
     return groups
 
 
+def group_tokens_semantically(
+    tokens: Sequence[OcrToken],
+    semantic_groups: List[List[int]],
+) -> List[TokenGroup]:
+    """
+    Group tokens based on semantic groups from vision LLM.
+    Each semantic group is a list of token indices that should be grouped together.
+    """
+    groups: List[TokenGroup] = []
+    used_indices = set()
+    
+    # Create groups from semantic groupings
+    for group_indices in semantic_groups:
+        if not group_indices:
+            continue
+        
+        # Filter to valid token indices
+        valid_indices = [idx for idx in group_indices if 0 <= idx < len(tokens)]
+        if not valid_indices:
+            continue
+        
+        # Create a new group with these tokens
+        new_group = TokenGroup()
+        for idx in valid_indices:
+            if idx not in used_indices:
+                new_group.add(tokens[idx])
+                used_indices.add(idx)
+        
+        if new_group.tokens:
+            groups.append(new_group)
+    
+    # Add any remaining tokens that weren't in semantic groups as individual groups
+    for idx, token in enumerate(tokens):
+        if idx not in used_indices:
+            new_group = TokenGroup()
+            new_group.add(token)
+            groups.append(new_group)
+    
+    return groups
+
+
+def merge_semantic_with_spatial(
+    tokens: Sequence[OcrToken],
+    semantic_groups: Optional[List[List[int]]],
+    spatial_threshold: float,
+) -> List[TokenGroup]:
+    """
+    Merge semantic groups with spatial grouping for better results.
+    If semantic groups are provided, use them; otherwise fall back to spatial-only.
+    Within semantic groups, apply spatial grouping to handle multi-word labels.
+    """
+    if semantic_groups is None or not semantic_groups:
+        # Fallback to spatial-only grouping
+        return group_tokens_spatially(tokens, spatial_threshold)
+    
+    groups: List[TokenGroup] = []
+    used_indices = set()
+    
+    # Process each semantic group
+    for group_indices in semantic_groups:
+        if not group_indices:
+            continue
+        
+        # Filter to valid token indices
+        valid_indices = [idx for idx in group_indices if 0 <= idx < len(tokens)]
+        if not valid_indices:
+            continue
+        
+        # Get tokens for this semantic group
+        semantic_tokens = [tokens[idx] for idx in valid_indices]
+        
+        # Within this semantic group, apply spatial grouping to handle
+        # cases where multiple words form a single label
+        spatial_subgroups = group_tokens_spatially(semantic_tokens, spatial_threshold)
+        
+        # Merge spatial subgroups into a single semantic group
+        # (or keep them separate if they're far apart - but for now merge)
+        merged_group = TokenGroup()
+        for subgroup in spatial_subgroups:
+            for token in subgroup.tokens:
+                # Find original index
+                orig_idx = next(i for i, t in enumerate(tokens) if t is token)
+                if orig_idx not in used_indices:
+                    merged_group.add(token)
+                    used_indices.add(orig_idx)
+        
+        if merged_group.tokens:
+            groups.append(merged_group)
+    
+    # Add any remaining tokens that weren't in semantic groups
+    for idx, token in enumerate(tokens):
+        if idx not in used_indices:
+            new_group = TokenGroup()
+            new_group.add(token)
+            groups.append(new_group)
+    
+    return groups
+
+
 def calculate_bounding_boxes(
     groups: Sequence[TokenGroup],
     padding: float,
@@ -169,14 +268,30 @@ def generate_occlusion_card_data(
     min_confidence: float = 75.0,
     proximity_threshold: float = 90.0,
     padding: float = 8.0,
+    semantic_groups: Optional[List[List[int]]] = None,
 ) -> Dict[str, Any]:
     """
     Generate occlusion rectangles and markup from OCR data.
-    Does NOT generate the .apkg file (separation of concerns).
+    Optionally uses semantic groups from vision LLM to refine grouping.
+    
+    Args:
+        ocr_data: OCR data with tokens
+        image_width: Image width in pixels
+        image_height: Image height in pixels
+        min_confidence: Minimum confidence threshold for tokens
+        proximity_threshold: Distance threshold for spatial grouping
+        padding: Padding around bounding boxes
+        semantic_groups: Optional list of token index groups from vision LLM
+            (indices refer to original OCR tokens before confidence filtering)
+    
+    Returns:
+        Dictionary with rectangles, markup, token_count, and group_count
     """
-    # Parse tokens
+    # Parse tokens and create mapping from original OCR index to filtered token index
     tokens = []
-    for raw in ocr_data.get("tokens", []):
+    ocr_to_filtered_map: Dict[int, int] = {}  # Maps original OCR index -> filtered token index
+    
+    for orig_idx, raw in enumerate(ocr_data.get("tokens", [])):
         text = str(raw.get("text", "")).strip()
         if not text: continue
         
@@ -186,15 +301,33 @@ def generate_occlusion_card_data(
         bbox = raw.get("bbox")
         if not bbox or len(bbox) != 4: continue
         
+        filtered_idx = len(tokens)
         tokens.append(OcrToken(
-            index=len(tokens),
+            index=filtered_idx,
             text=text,
             bbox=tuple([int(float(v)) for v in bbox]), # type: ignore
             confidence=conf
         ))
-        
-    # Group
-    groups = group_tokens_spatially(tokens, proximity_threshold)
+        ocr_to_filtered_map[orig_idx] = filtered_idx
+    
+    # Map semantic groups from OCR indices to filtered token indices
+    mapped_semantic_groups: Optional[List[List[int]]] = None
+    if semantic_groups:
+        mapped_semantic_groups = []
+        for group in semantic_groups:
+            mapped_group = [ocr_to_filtered_map[idx] for idx in group if idx in ocr_to_filtered_map]
+            if mapped_group:
+                mapped_semantic_groups.append(mapped_group)
+        if not mapped_semantic_groups:
+            mapped_semantic_groups = None
+    
+    # Group tokens using semantic groups if available, otherwise spatial-only
+    if mapped_semantic_groups:
+        groups = merge_semantic_with_spatial(tokens, mapped_semantic_groups, proximity_threshold)
+        grouping_method = "semantic+spatial"
+    else:
+        groups = group_tokens_spatially(tokens, proximity_threshold)
+        grouping_method = "spatial-only"
     
     # Calculate boxes
     rects = calculate_bounding_boxes(groups, padding, image_width, image_height)
@@ -204,5 +337,6 @@ def generate_occlusion_card_data(
         "rectangles": rects,
         "markup": markup,
         "token_count": len(tokens),
-        "group_count": len(groups)
+        "group_count": len(groups),
+        "grouping_method": grouping_method
     }
