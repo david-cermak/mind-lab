@@ -73,9 +73,29 @@ def extract_assets(pdf_path: Path, output_dir: Path) -> None:
                 )
 
             images = page.get_images(full=True)
+            
+            # Write metadata entry for pages without images (text-only pages)
             if not images:
+                record = {
+                    "id": f"page{page_num}_text_only",
+                    "image_path": None,
+                    "page_number": page_num,
+                    "next_page_number": next_page_number,
+                    "xref": None,
+                    "width": None,
+                    "height": None,
+                    "bboxes": [],
+                    "page_text": page_text,
+                    "next_page_text": next_page_text,
+                    "page_text_path": str(page_text_file.relative_to(output_dir)),
+                    "next_page_text_path": str(next_page_text_file.relative_to(output_dir))
+                    if next_page_text_file
+                    else None,
+                }
+                metadata_file.write(json.dumps(record, ensure_ascii=False) + "\n")
                 continue
 
+            # Write metadata entries for pages with images
             for img_index, img in enumerate(images):
                 xref = img[0]
                 pix = fitz.Pixmap(doc, xref)

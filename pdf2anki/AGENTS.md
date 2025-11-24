@@ -163,6 +163,7 @@ PDF2ANKI_BASE_URL=https://...           # Optional: LiteLLM proxy
 PDF2ANKI_OUTPUT_DIR=output
 PDF2ANKI_FINAL_APKG=result.apkg
 PDF2ANKI_MAX_TEXT_CARDS=10
+PDF2ANKI_TOKENS_PER_CARD=300            # Target tokens per card (lower = denser, default: 300)
 ```
 
 ### CLI Arguments

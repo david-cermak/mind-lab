@@ -5,6 +5,7 @@ Analyze extracted text and OCR metadata to plan card generation.
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,8 +27,13 @@ def create_strategy_plan(
     model: str = "gpt-4o-mini",
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    tokens_per_card: int = None,
 ) -> None:
     """Analyze content and generate a card creation strategy."""
+    
+    # Default tokens_per_card from env or use 300
+    if tokens_per_card is None:
+        tokens_per_card = int(os.getenv("PDF2ANKI_TOKENS_PER_CARD", "300"))
     
     if not metadata_path.exists():
         raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
@@ -45,11 +51,15 @@ def create_strategy_plan(
         p_num = p.get("page_number")
         if p_num:
             if p_num not in pages_by_num:
-                pages_by_num[p_num] = {"text": "", "images": []}
+                pages_by_num[p_num] = {"text": "", "text_path": None, "images": []}
             
             # Add text if we haven't already (metadata is per-image, so text repeats)
             if not pages_by_num[p_num]["text"] and p.get("page_text"):
                 pages_by_num[p_num]["text"] = p["page_text"]
+            
+            # Store text_path from any entry (prefer from entries with images, but any will do)
+            if not pages_by_num[p_num]["text_path"] and p.get("page_text_path"):
+                pages_by_num[p_num]["text_path"] = p["page_text_path"]
             
             pages_by_num[p_num]["images"].append(p)
 
@@ -67,21 +77,25 @@ def create_strategy_plan(
         images = page_data["images"]
         
         # Strategy for Text
-        # Simple heuristic: 1 card per ~500 tokens of dense text, or use LLM to decide
+        # Heuristic: 1 card per tokens_per_card tokens (default 300, configurable)
         token_count = estimate_tokens(text)
         
         text_strategy = {
             "type": "text_qa",
             "page_number": p_num,
-            "source_text_path": images[0].get("page_text_path") if images else None, # Approximate
-            "estimated_cards": max(1, math.ceil(token_count / 300)) if token_count > 50 else 0,
+            "source_text_path": page_data.get("text_path") or (images[0].get("page_text_path") if images else None),
+            "estimated_cards": max(1, math.ceil(token_count / tokens_per_card)) if token_count > 50 else 0,
             "context_tokens": token_count
         }
         if text_strategy["estimated_cards"] > 0:
             plan_entries.append(text_strategy)
             
-        # Strategy for Images
+        # Strategy for Images (skip text-only entries)
         for img in images:
+            # Skip text-only entries (pages without images)
+            if img.get("image_path") is None:
+                continue
+                
             img_id = img.get("id")
             ocr_path = ocr_dir / f"{img_id}.json"
             
@@ -130,7 +144,13 @@ if __name__ == "__main__":
     parser.add_argument("--metadata", required=True, help="Path to assets_metadata.jsonl")
     parser.add_argument("--ocr-dir", required=True, help="Directory containing OCR JSON files")
     parser.add_argument("--output", required=True, help="Path to save plan.json")
+    parser.add_argument(
+        "--tokens-per-card",
+        type=int,
+        default=int(os.getenv("PDF2ANKI_TOKENS_PER_CARD", "300")),
+        help="Target tokens per card (lower = denser cards, default: 300)",
+    )
     
     args = parser.parse_args()
-    create_strategy_plan(Path(args.metadata), Path(args.ocr_dir), Path(args.output))
+    create_strategy_plan(Path(args.metadata), Path(args.ocr_dir), Path(args.output), tokens_per_card=args.tokens_per_card)
 

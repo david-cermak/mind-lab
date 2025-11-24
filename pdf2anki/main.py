@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--deck-name", type=str, default="PDF Deck", help="Name of the Anki deck")
     parser.add_argument("--skip-ocr", action="store_true", help="Skip OCR if already done")
     parser.add_argument("--max-text-cards", type=int, default=int(os.getenv("PDF2ANKI_MAX_TEXT_CARDS", "10")), help="Safety limit for text card generation")
+    parser.add_argument("--tokens-per-card", type=int, default=int(os.getenv("PDF2ANKI_TOKENS_PER_CARD", "300")), help="Target tokens per card (lower = denser cards, default: 300)")
     
     # LLM Config - use .env defaults if not provided via CLI
     parser.add_argument("--llm-model", default=os.getenv("PDF2ANKI_LLM_MODEL", "gpt-4o-mini"), help="Model to use")
@@ -62,7 +63,7 @@ def main():
     # 3. Analysis & Strategy
     logging.info("Step 3: Analyzing content and planning strategy...")
     plan_path = args.output_dir / "plan.json"
-    strategy.create_strategy_plan(metadata_path, ocr_dir, plan_path)
+    strategy.create_strategy_plan(metadata_path, ocr_dir, plan_path, tokens_per_card=args.tokens_per_card)
     
     with open(plan_path, "r", encoding="utf-8") as f:
         plan_data = json.load(f)

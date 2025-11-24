@@ -29,7 +29,7 @@ def analyze_image_context(
     image_path: Path,
     page_text: str,
     ocr_tokens: List[Dict[str, Any]],
-    model: str = "gpt-4o",
+    model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     max_tokens: int = 2000,
@@ -40,6 +40,10 @@ def analyze_image_context(
     """
     if OpenAI is None:
         raise RuntimeError("openai package not installed")
+
+    # Use provided model, or env var, or default
+    if model is None:
+        model = os.environ.get("PDF2ANKI_VISION_MODEL", "gpt-4o")
 
     client = OpenAI(
         base_url=base_url or os.environ.get("PDF2ANKI_BASE_URL"),
