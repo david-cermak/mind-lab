@@ -108,3 +108,74 @@ def analyze_image_context(
         logging.error(f"Vision analysis failed: {e}")
         return {"error": str(e)}
 
+
+def describe_image_only(
+    image_path: Path,
+    page_text: str = "",
+    *,
+    language: str = "cs",
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    max_tokens: int = 800,
+) -> Dict[str, Any]:
+    """
+    Ask a vision-capable LLM to describe the image in the requested language.
+    Returns JSON with at least the key 'description'.
+    """
+    if OpenAI is None:
+        raise RuntimeError("openai package not installed")
+
+    if model is None:
+        model = os.environ.get("PDF2ANKI_VISION_MODEL", "gpt-4o")
+
+    client = OpenAI(
+        base_url=base_url or os.environ.get("PDF2ANKI_BASE_URL"),
+        api_key=api_key or os.environ.get("OPENAI_API_KEY"),
+    )
+
+    system_msg = (
+        "You are a helpful assistant that writes short educational image descriptions "
+        "and always returns valid JSON."
+    )
+
+    prompt = (
+        "Analyze the provided educational illustration and describe what it shows.\n"
+        f"- Language: {language} (use fluent, natural sentences).\n"
+        "- Length: 2-3 sentences that mention the key structures or concepts.\n"
+        "- Be factual; do not invent content that is not clearly visible.\n"
+        "- If contextual text is provided, only include details that match the image.\n\n"
+        f"Context from surrounding text (optional):\n{page_text[:1000]}\n\n"
+        "Return JSON with:\n"
+        '{\n  "description": "<paragraph in requested language>"\n}\n'
+    )
+
+    image_url = _image_to_data_url(image_path)
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                },
+            ],
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        if not content:
+            return {"error": "Empty response"}
+
+        return json.loads(content)
+
+    except Exception as e:
+        logging.error(f"Vision description failed: {e}")
+        return {"error": str(e)}
+

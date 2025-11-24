@@ -19,6 +19,8 @@ If the earlier stages already produced intermediates, you can re-run later steps
 | OCR images | `python -m pdf2anki.extractors.ocr --metadata output/metadata.jsonl --output-dir output/ocr` | Generates one OCR JSON per image |
 | Plan cards | `python -m pdf2anki.analysis.strategy --metadata output/metadata.jsonl --ocr-dir output/ocr --output output/plan.json` | Decides how many text/occlusion cards to make |
 | Generate text cards only | `python -m pdf2anki.generate_text_cards --output-dir output --final-apkg output/text_cards.apkg` | Builds a deck with text notes only and writes `output/text_cards.json` |
+| Generate image-only cards | `python -m pdf2anki.generate_image_only_cards --output-dir output --final-apkg output/image_cards.apkg` | Describes `image_visual` plan items (no OCR) and builds a deck with image front + Czech description back |
+| Generate occlusion cards only | `python -m pdf2anki.generate_image_occlusion_cards --output-dir output --final-apkg output/occlusion_cards.apkg` | Reuses existing OCR + plan to build only image occlusion notes (with optional vision grouping) |
 | Vision analysis (debug only) | `python -m pdf2anki.debug_occlusion <image_id> --output-dir output --call-llm` | Test vision LLM semantic grouping (not yet integrated into main pipeline) |
 | Regenerate deck only | `python -m pdf2anki.main pdfs/book.pdf --output-dir output --final-apkg book.apkg --skip-ocr --max-text-cards 0` | Reuses existing assets, skips OCR/text cards as needed. Uses spatial grouping for occlusion (distance-based algorithm) |
 

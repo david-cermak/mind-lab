@@ -132,6 +132,15 @@ pdf2anki/
 - Uses semantic grouping from vision LLM when available, merged with spatial grouping
 - Falls back to spatial-only grouping if vision LLM fails or returns no groups
 - Semantic groups refine spatial groups: tokens in the same semantic group are grouped together, with spatial grouping applied within each semantic group to handle multi-word labels
+- Dedicated CLI: `python -m pdf2anki.generate_image_occlusion_cards --output-dir output --final-apkg output/occlusion_cards.apkg` (reuses plan+OCR, optionally calls vision for semantic grouping, outputs `occlusion_cards.json`)
+
+### Image-only Cards (`generate_image_only_cards.py`)
+
+- Covers `image_visual` plan items where OCR is empty or low-confidence
+- Calls `analysis/vision.describe_image_only` to request a Czech (cs) description
+- Adds Basic cards with the raw image on the front and the generated description on the back
+- CLI helper: `python -m pdf2anki.generate_image_only_cards --output-dir output --final-apkg output/image_cards.apkg`
+- Writes a preview JSON (`image_cards.json`) alongside the deck for quick review
 
 ### Deck Builder (`utils/anki_db.py`)
 

@@ -104,14 +104,44 @@ class DeckBuilder:
         self.output_path = output_path
         self.notes = []
         self.media_files = {} # map "filename" -> "source_path"
-        
+
+    def _register_media_file(self, source_path: Path) -> str:
+        filename = source_path.name
+        if filename in self.media_files and self.media_files[filename] != source_path:
+            stem = source_path.stem
+            suffix = source_path.suffix
+            filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+
+        self.media_files[filename] = source_path
+        return filename
+
     def add_text_note(self, front: str, back: str, tags: Optional[List[str]] = None):
         self.notes.append({
             "type": "basic",
             "fields": [front, back],
             "tags": tags or []
         })
-        
+
+    def add_image_note(
+        self,
+        image_path: Path,
+        description: str,
+        front_caption: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ):
+        filename = self._register_media_file(image_path)
+        front_parts = []
+        if front_caption:
+            front_parts.append(f"<div>{front_caption}</div>")
+        front_parts.append(f'<img src="{filename}">')
+        front_html = "\n".join(front_parts)
+
+        self.notes.append({
+            "type": "basic",
+            "fields": [front_html, description],
+            "tags": tags or ["image-only"]
+        })
+
     def add_occlusion_note(self, 
                            markup: str, 
                            image_path: Path, 
@@ -119,15 +149,7 @@ class DeckBuilder:
                            back_extra: str = "", 
                            tags: Optional[List[str]] = None):
         
-        # Ensure filename is unique in media dict, simplistic approach
-        filename = image_path.name
-        if filename in self.media_files and self.media_files[filename] != image_path:
-            # Name collision with different content, uniqueify
-            stem = image_path.stem
-            suffix = image_path.suffix
-            filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
-            
-        self.media_files[filename] = image_path
+        filename = self._register_media_file(image_path)
         
         self.notes.append({
             "type": "occlusion",
