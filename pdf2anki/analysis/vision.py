@@ -32,11 +32,11 @@ def analyze_image_context(
     model: str = "gpt-4o",
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
-    max_tokens: int = 600,
+    max_tokens: int = 2000,
 ) -> Dict[str, Any]:
     """
-    Ask Vision LLM to describe the image in the context of the page
-    and verify if OCR tokens match visual labels.
+    Ask Vision LLM to describe the image and group text labels semantically.
+    Returns description and groups of token indices that belong together.
     """
     if OpenAI is None:
         raise RuntimeError("openai package not installed")
@@ -46,17 +46,33 @@ def analyze_image_context(
         api_key=api_key or os.environ.get("OPENAI_API_KEY")
     )
     
-    # Summarize OCR for context
-    ocr_summary = ", ".join([t.get("text", "") for t in ocr_tokens[:50]]) # Limit to avoid huge context
+    # Format OCR tokens with positions for grouping
+    ocr_formatted = []
+    for tok in ocr_tokens:
+        bbox = tok.get("bbox", [])
+        ocr_formatted.append({
+            "text": tok.get("text", ""),
+            "bbox": {"left": bbox[0], "top": bbox[1], "width": bbox[2], "height": bbox[3]},
+            "confidence": tok.get("confidence", 0)
+        })
+    
+    ocr_json = json.dumps(ocr_formatted, ensure_ascii=False, indent=2)
+    
+    system_msg = "You are a helpful assistant analyzing educational diagrams. Output valid JSON."
     
     prompt = (
-        "Analyze this image from a textbook.\n"
-        f"Context from page text:\n{page_text[:1000]}...\n\n"
-        f"OCR detected text labels:\n{ocr_summary}\n\n"
-        "1. Provide a concise description of what this diagram/image shows.\n"
-        "2. Is this a diagram suitable for image occlusion (hiding labels to test memory)? (Yes/No)\n"
-        "3. Are the OCR labels accurate representations of the visual labels? (Yes/No)\n"
-        "Return JSON with keys: 'description', 'suitable_for_occlusion', 'ocr_accuracy_comment'."
+        "Analyze this educational diagram from a textbook.\n\n"
+        f"Context from page text:\n{page_text[:1000]}\n\n"
+        f"OCR detected text labels with their positions:\n{ocr_json}\n\n"
+        "Tasks:\n"
+        "1. Provide a concise description (2-3 sentences) of what this diagram shows.\n"
+        "2. Group the text labels that belong together semantically (e.g., labels for the same structure, "
+        "or labels that form a complete concept). Return groups as an array where each group contains "
+        "the indices of tokens that should be grouped together.\n\n"
+        "Return JSON with keys:\n"
+        "- 'description': string\n"
+        "- 'groups': array of arrays, where each inner array contains token indices (0-based) that belong together\n"
+        "- 'group_labels': optional array of descriptive labels for each group"
     )
 
     image_url = _image_to_data_url(image_path)
@@ -65,7 +81,7 @@ def analyze_image_context(
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant analysing educational images. Output valid JSON."},
+                {"role": "system", "content": system_msg},
                 {
                     "role": "user", 
                     "content": [
