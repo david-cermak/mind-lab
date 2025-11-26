@@ -10,10 +10,12 @@ import httpx
 import yaml
 import sys
 
-from .models import ChapterSummary, Candidate, ChapterCitations, Citation, to_jsonl
+from .models import ChapterSummary, ChapterFullSummary, Candidate, ChapterCitations, Citation, to_jsonl
 from .prompts import (
     summarization_system_prompt,
     summarization_user_prompt,
+    full_summary_system_prompt,
+    full_summary_user_prompt,
     candidate_system_prompt,
     candidate_user_prompt,
     PATTERN_LIBRARY,
@@ -197,6 +199,95 @@ def run_summarization_for_chapter(
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(summary.model_dump(), f, indent=2, ensure_ascii=False)
     return summary
+
+
+def run_full_summary_for_chapter(
+    chapter_id: str,
+    chapter_title: str,
+    chapter_text: str,
+    out_dir: Path,
+    config: Dict[str, Any],
+    raw_override: str | None = None,
+) -> ChapterFullSummary:
+    """
+    Generate a high-level, prose summary for a chapter.
+
+    The output is stored as <chapter_id>.summary.json in the summaries directory.
+    """
+    ensure_dir(out_dir)
+    llm = LLMClient(
+        model=config["llm"]["model"],
+        timeout_seconds=config["llm"]["request_timeout_seconds"],
+        base_url=config.get("llm", {}).get("base_url"),
+    )
+    system = full_summary_system_prompt()
+    user = full_summary_user_prompt(
+        chapter_title=chapter_title,
+        chapter_text=chapter_text,
+    )
+    if config.get("debug_llm", False):
+        debug_payload = {
+            "url": f"{llm.base_url}/chat/completions",
+            "model": llm.model,
+            "temperature": config["llm"]["temperature_summarize"],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        print(json.dumps({"debug_llm": True, "phase": "full_summary", "payload": debug_payload}, indent=2))
+        return ChapterFullSummary(
+            chapter_id=chapter_id,
+            title=chapter_title,
+            learning_objective="",
+            summary="",
+        )
+    if raw_override is not None:
+        raw = raw_override
+    else:
+        raw = llm.chat(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=config["llm"]["temperature_summarize"],
+        )
+    if config.get("debug_llm_output", False):
+        try:
+            debug_out_path = out_dir / f"{chapter_id}.summary.raw.txt"
+            with open(debug_out_path, "w", encoding="utf-8") as f:
+                f.write(raw)
+            print(
+                json.dumps(
+                    {
+                        "debug_llm_output": True,
+                        "phase": "full_summary",
+                        "chapter_id": chapter_id,
+                        "raw_path": str(debug_out_path),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"[debug_llm_output] Failed to persist raw full_summary output: {e}", file=sys.stderr)
+    title = chapter_title
+    learning_objective = ""
+    summary_text = ""
+    try:
+        parsed = _loads_relaxed_json(raw)
+        if isinstance(parsed, dict):
+            title = parsed.get("title", title) or chapter_title
+            learning_objective = parsed.get("learning_objective", "").strip()
+            summary_text = parsed.get("summary", "").strip()
+    except Exception:
+        # Fallback: use raw text as summary if parsing fails
+        summary_text = raw.strip()
+    result = ChapterFullSummary(
+        chapter_id=chapter_id,
+        title=title,
+        learning_objective=learning_objective,
+        summary=summary_text,
+    )
+    out_path = out_dir / f"{chapter_id}.summary.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result.model_dump(), f, indent=2, ensure_ascii=False)
+    return result
 
 
 def run_citations_for_chapter(

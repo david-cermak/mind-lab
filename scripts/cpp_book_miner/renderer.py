@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from .models import ChapterRef, Candidate, ReviewBundle, ChapterCitations, from_jsonl
+from .models import ChapterRef, Candidate, ReviewBundle, ChapterCitations, ChapterFullSummary, from_jsonl
 
 
 def _env(templates_dir: Path) -> Environment:
@@ -133,5 +133,36 @@ def render_citations_markdown(
             
             f.write(f"**Context Summary:**\n\n{citation.context}\n\n")
             f.write("---\n\n")
+
+
+def render_summary_markdown(
+    chapter: ChapterRef,
+    summary: ChapterFullSummary,
+    out_path: Path,
+) -> None:
+    """
+    Render a human-readable markdown summary for a chapter.
+
+    This does not use Jinja; it just formats the JSON into markdown:
+    - H1: chapter title
+    - H2: Summary title (from the LLM)
+    - Learning objective section
+    - Summary paragraphs
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        # Chapter heading
+        f.write(f"# {chapter.title}\n\n")
+        # Summary title
+        display_title = summary.title.strip() or chapter.title
+        f.write(f"## {display_title}\n\n")
+        # Learning objective
+        if summary.learning_objective.strip():
+            f.write("### Learning objective\n\n")
+            f.write(summary.learning_objective.strip() + "\n\n")
+        # Summary body
+        if summary.summary.strip():
+            f.write("### Summary\n\n")
+            f.write(summary.summary.strip() + "\n")
 
 

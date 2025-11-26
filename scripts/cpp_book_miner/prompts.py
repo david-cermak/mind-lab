@@ -47,6 +47,33 @@ def summarization_user_prompt(chapter_title: str, chapter_text: str, max_topics:
     ).replace("{max_topics}", str(max_topics))
 
 
+def full_summary_system_prompt() -> str:
+    return (
+        "You are a C++ language expert and technical educator. "
+        "Your task is to write a clear, concise, but substantial summary of a single chapter."
+    )
+
+
+def full_summary_user_prompt(chapter_title: str, chapter_text: str) -> str:
+    return (
+        f"Chapter title: {chapter_title}\n\n"
+        "You are summarizing this chapter for an experienced C++ programmer who wants high-signal takeaways.\n\n"
+        "Produce a structured JSON object with the following fields:\n"
+        "{\n"
+        '  "title": string,                // A short, compelling title for the chapter summary\n'
+        '  "learning_objective": string,   // 1–3 sentences stating what the reader should learn from this chapter\n'
+        '  "summary": string               // 3–8 paragraphs, 100–500 words total, covering the core ideas\n'
+        "}\n\n"
+        "Constraints for the `summary` field:\n"
+        "- Write 3–8 paragraphs total (separate paragraphs with blank lines).\n"
+        "- Keep the total length between 100 and 500 words.\n"
+        "- Focus on mechanisms, pitfalls, and key design ideas rather than surface-level advice.\n\n"
+        "Return STRICT JSON only, with exactly these three keys.\n\n"
+        "Chapter content:\n"
+        f"{chapter_text}\n"
+    )
+
+
 def candidate_system_prompt() -> str:
     return (
         "You are a C++ language expert optimizing for viral, minimal Godbolt examples that reveal "

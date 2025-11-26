@@ -23,6 +23,13 @@ class ChapterSummary(BaseModel):
     topics: List[str]
 
 
+class ChapterFullSummary(BaseModel):
+    chapter_id: str
+    title: str
+    learning_objective: str
+    summary: str
+
+
 class Citation(BaseModel):
     citation: str = Field(description="The exact wording of the quotation/citation")
     line_number: int = Field(description="Line number in the chapter where this citation appears")

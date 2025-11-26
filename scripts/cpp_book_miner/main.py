@@ -10,10 +10,24 @@ import re
 
 import yaml
 
-from .models import ChapterIndex, ChapterRef, ChapterSummary, Candidate, ChapterCitations, from_jsonl
+from .models import (
+    ChapterIndex,
+    ChapterRef,
+    ChapterSummary,
+    ChapterFullSummary,
+    Candidate,
+    ChapterCitations,
+    from_jsonl,
+)
 from .splitter import split_book_markdown
-from .generator import load_config, run_summarization_for_chapter, run_candidates_for_chapter, run_citations_for_chapter
-from .renderer import render_review_markdown, export_post, render_citations_markdown
+from .generator import (
+    load_config,
+    run_summarization_for_chapter,
+    run_full_summary_for_chapter,
+    run_candidates_for_chapter,
+    run_citations_for_chapter,
+)
+from .renderer import render_review_markdown, export_post, render_citations_markdown, render_summary_markdown
 from .generator import run_refine_for_candidates
 
 
@@ -212,16 +226,92 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         return
 
 
+def cmd_summary(args: argparse.Namespace) -> None:
+    """
+    Generate a prose summary for each chapter (title, learning objective, 3–8 paragraph summary).
+    """
+    config = load_config(Path(args.config))
+    # Enable prompt debugging without hitting the network
+    config["debug_llm"] = bool(getattr(args, "debug_llm", False))
+    config["debug_llm_output"] = bool(getattr(args, "debug_llm_output", False))
+    raw_override: str | None = None
+    if getattr(args, "raw_file", ""):
+        with open(args.raw_file, "r", encoding="utf-8") as f:
+            raw_override = f.read()
+        # Ensure we don't try to "debug prompt" when using override
+        config["debug_llm"] = False
+    elif getattr(args, "paste_raw", False):
+        raw_override = sys.stdin.read()
+        config["debug_llm"] = False
+    paths = _resolve_paths(config)
+    idx = _read_index(paths)
+    # Restrict to a single chapter if requested or when slicing is used
+    chapters: List[ChapterRef]
+    if args.chapter:
+        chapters = [c for c in idx.chapters if c.chapter_id == args.chapter]
+    elif args.subheading or args.start_line or args.end_line or args.first:
+        chapters = idx.chapters[:1]
+    else:
+        chapters = idx.chapters
+    try:
+        for chapter in chapters:
+            text = _chapter_text_with_slice(chapter, args)
+            suffix = _build_suffix(args)
+            out_id = chapter.chapter_id + suffix
+            summary = run_full_summary_for_chapter(
+                chapter_id=out_id,
+                chapter_title=chapter.title,
+                chapter_text=text,
+                out_dir=paths["summaries_dir"],
+                config=config,
+                raw_override=raw_override,
+            )
+            print(
+                f"Full summary for {out_id}: "
+                f"title={summary.title!r}, "
+                f"learning_objective_len={len(summary.learning_objective)}, "
+                f"summary_len={len(summary.summary)}"
+            )
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return
+
+
 def _load_summary(paths: Dict[str, Path], chapter_id: str) -> ChapterSummary:
     with open(paths["summaries_dir"] / f"{chapter_id}.json", "r", encoding="utf-8") as f:
         data = json.load(f)
     return ChapterSummary.model_validate(data)
 
 
+def _load_full_summary(paths: Dict[str, Path], chapter_id: str) -> ChapterFullSummary:
+    with open(paths["summaries_dir"] / f"{chapter_id}.summary.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return ChapterFullSummary.model_validate(data)
+
+
 def _load_citations(paths: Dict[str, Path], chapter_id: str) -> ChapterCitations:
     with open(paths["citations_dir"] / f"{chapter_id}.json", "r", encoding="utf-8") as f:
         data = json.load(f)
     return ChapterCitations.model_validate(data)
+
+
+def _resolve_named_dir(paths: Dict[str, Path], name: str) -> Path | None:
+    """
+    Map a logical folder name (e.g. 'citations', 'candidates') to a configured path.
+    Falls back to None if the name is not recognized.
+    """
+    mapping: Dict[str, str] = {
+        "chapters": "chapters_dir",
+        "summaries": "summaries_dir",
+        "candidates": "candidates_dir",
+        "review": "review_dir",
+        "refined": "refined_dir",
+        "citations": "citations_dir",
+    }
+    key = mapping.get(name.lower())
+    if not key:
+        return None
+    return paths[key]
 
 
 def cmd_generate(args: argparse.Namespace) -> None:
@@ -336,6 +426,123 @@ def cmd_render_citations(args: argparse.Namespace) -> None:
         print(f"Wrote citations markdown: {out_path}")
 
 
+def cmd_render_summary(args: argparse.Namespace) -> None:
+    """
+    Render human-readable markdown summaries from the JSON full summaries.
+    """
+    config = load_config(Path(args.config))
+    paths = _resolve_paths(config)
+    idx = _read_index(paths)
+    # Restrict which chapters to render if requested
+    chapters: List[ChapterRef]
+    if getattr(args, "chapter", ""):
+        chapters = [c for c in idx.chapters if c.chapter_id == args.chapter]
+    elif getattr(args, "first", False):
+        chapters = idx.chapters[:1]
+    else:
+        chapters = idx.chapters
+    for chapter in chapters:
+        try:
+            summary = _load_full_summary(paths, chapter.chapter_id)
+        except FileNotFoundError:
+            print(
+                f"Warning: No full summary found for {chapter.chapter_id}. "
+                f"Run 'summary' command first.",
+                file=sys.stderr,
+            )
+            continue
+        out_path = paths["summaries_dir"] / f"{chapter.chapter_id}.summary.md"
+        render_summary_markdown(
+            chapter=chapter,
+            summary=summary,
+            out_path=out_path,
+        )
+        print(f"Wrote summary markdown: {out_path}")
+
+
+def cmd_join(args: argparse.Namespace) -> None:
+    """
+    Join multiple chapter-level files in a folder into a single file.
+
+    Supports:
+    - ext=json: produces a JSON array of objects loaded from each file.
+    - ext=md: concatenates markdown files with a horizontal rule separator.
+
+    The folder can be either:
+    - A logical name like 'citations', 'candidates', 'summaries', etc.
+    - A path relative to the repo root.
+    """
+    config = load_config(Path(args.config))
+    paths = _resolve_paths(config)
+    base = _repo_root()
+
+    # Resolve folder
+    folder = args.folder
+    dir_path = _resolve_named_dir(paths, folder)
+    if dir_path is None:
+        # Treat as filesystem path (relative to repo root)
+        dir_path = (base / folder).resolve()
+
+    ext = args.ext.lstrip(".").lower()
+    if ext not in ("json", "md", "jsonl"):
+        print(f"Error: Unsupported extension '{ext}'. Use 'json', 'jsonl', or 'md'.", file=sys.stderr)
+        return
+
+    if not dir_path.exists() or not dir_path.is_dir():
+        print(f"Error: Directory does not exist: {dir_path}", file=sys.stderr)
+        return
+
+    # Collect files with the requested extension, sorted by name
+    files = sorted(p for p in dir_path.glob(f"*.{ext}") if p.is_file())
+    if not files:
+        print(f"Warning: No *.{ext} files found in {dir_path}", file=sys.stderr)
+        return
+
+    output_name = args.output or f"all.{ext}"
+    out_path = dir_path / output_name
+    # Exclude the output file itself if it already exists
+    files = [p for p in files if p.name != out_path.name]
+
+    if not files:
+        print(f"Warning: Nothing to join after excluding {out_path.name}", file=sys.stderr)
+        return
+
+    if ext == "md":
+        with open(out_path, "w", encoding="utf-8") as out_f:
+            for i, path in enumerate(files):
+                with open(path, "r", encoding="utf-8") as in_f:
+                    content = in_f.read().rstrip()
+                if i > 0:
+                    out_f.write("\n\n---\n\n")
+                out_f.write(content + "\n")
+        print(f"Wrote combined markdown: {out_path}")
+    elif ext == "json":
+        items: List[Any] = []
+        for path in files:
+            try:
+                with open(path, "r", encoding="utf-8") as in_f:
+                    obj = json.load(in_f)
+                items.append(obj)
+            except Exception as e:
+                print(f"Warning: Skipping {path} due to JSON parse error: {e}", file=sys.stderr)
+        with open(out_path, "w", encoding="utf-8") as out_f:
+            json.dump(items, out_f, indent=2, ensure_ascii=False)
+        print(f"Wrote combined JSON array ({len(items)} items): {out_path}")
+    elif ext == "jsonl":
+        # Simple concatenation of JSON Lines files
+        count = 0
+        with open(out_path, "w", encoding="utf-8") as out_f:
+            for path in files:
+                with open(path, "r", encoding="utf-8") as in_f:
+                    for line in in_f:
+                        line = line.rstrip("\n")
+                        if not line.strip():
+                            continue
+                        out_f.write(line + "\n")
+                        count += 1
+        print(f"Wrote combined JSONL with {count} lines: {out_path}")
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     config = load_config(Path(args.config))
     paths = _resolve_paths(config)
@@ -399,6 +606,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp_sum.add_argument("--paste-raw", action="store_true", help="Read raw LLM output from stdin instead of calling LLM")
     sp_sum.add_argument("--raw-file", type=str, default="", help="Path to file containing raw LLM output to parse")
     sp_sum.set_defaults(func=cmd_summarize)
+    sp_full = sub.add_parser(
+        "summary",
+        help="Generate a full prose summary (title, learning objective, 3–8 paragraph summary) per chapter",
+    )
+    sp_full.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
+    sp_full.add_argument("--first", action="store_true", help="Use first chapter only")
+    sp_full.add_argument("--subheading", type=str, default="", help="Subsection heading to slice inside chapter")
+    sp_full.add_argument("--start-line", type=int, default=0, help="Start line within chapter (1-based)")
+    sp_full.add_argument("--end-line", type=int, default=0, help="End line within chapter (inclusive)")
+    sp_full.add_argument("--debug-llm", action="store_true", help="Print LLM prompts and skip API calls")
+    sp_full.add_argument("--debug-llm-output", action="store_true", help="Print and persist raw LLM outputs")
+    sp_full.add_argument("--paste-raw", action="store_true", help="Read raw LLM output from stdin instead of calling LLM")
+    sp_full.add_argument("--raw-file", type=str, default="", help="Path to file containing raw LLM output to parse")
+    sp_full.set_defaults(func=cmd_summary)
     sp_gen = sub.add_parser("generate", help="Generate candidates")
     sp_gen.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
     sp_gen.add_argument("--first", action="store_true", help="Use first chapter only")
@@ -425,6 +646,42 @@ def build_parser() -> argparse.ArgumentParser:
     sp_render_cit.add_argument("--debug-llm", action="store_true", help=argparse.SUPPRESS)
     sp_render_cit.add_argument("--debug-llm-output", action="store_true", help=argparse.SUPPRESS)
     sp_render_cit.set_defaults(func=cmd_render_citations)
+    sp_render_summary = sub.add_parser("render-summary", help="Render human-readable markdown summaries per chapter")
+    sp_render_summary.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
+    sp_render_summary.add_argument("--first", action="store_true", help="Render first chapter only")
+    # Accept debug flags here so users can pass them after the subcommand; they are no-ops for render-summary
+    sp_render_summary.add_argument("--debug-llm", action="store_true", help=argparse.SUPPRESS)
+    sp_render_summary.add_argument("--debug-llm-output", action="store_true", help=argparse.SUPPRESS)
+    sp_render_summary.set_defaults(func=cmd_render_summary)
+    sp_join = sub.add_parser(
+        "join",
+        help="Join chapter-level files in a folder (e.g., citations or candidates) into a single file",
+    )
+    sp_join.add_argument(
+        "--folder",
+        type=str,
+        required=True,
+        help=(
+            "Folder to join. Either a logical name like 'citations', 'candidates', 'summaries', "
+            "or a path relative to the repo root."
+        ),
+    )
+    sp_join.add_argument(
+        "--ext",
+        type=str,
+        required=True,
+        help="File extension to join: 'json' or 'md'.",
+    )
+    sp_join.add_argument(
+        "--output",
+        type=str,
+        default="",
+        help="Output filename (default: all.<ext> in the same folder).",
+    )
+    # Accept debug flags here so users can pass them after the subcommand; they are no-ops for join
+    sp_join.add_argument("--debug-llm", action="store_true", help=argparse.SUPPRESS)
+    sp_join.add_argument("--debug-llm-output", action="store_true", help=argparse.SUPPRESS)
+    sp_join.set_defaults(func=cmd_join)
     sp_export = sub.add_parser("export", help="Export accepted posts")
     sp_export.add_argument("--chapter", type=str, default="", help="Restrict to a chapter id")
     sp_export.add_argument("--first", action="store_true", help="Export first chapter only")
