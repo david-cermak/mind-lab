@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List, Tuple
+from typing import Iterable, List, Tuple
 
 from PIL import Image
 
@@ -36,18 +36,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_tokens(ocr_path: Path, min_conf: float) -> List[dict]:
-    data = json.loads(ocr_path.read_text(encoding="utf-8"))
+def _prepare_tokens(raw_tokens: Iterable[dict], min_conf: float) -> List[dict]:
     tokens = []
-    for tok in data.get("tokens", []):
+    for orig_index, tok in enumerate(raw_tokens):
         text = (tok.get("text") or "").strip()
         conf = float(tok.get("confidence", 0))
         if not text or conf < min_conf:
             continue
         bbox = tok.get("bbox") or [0, 0, 0, 0]
-        tokens.append({"text": text, "confidence": conf, "bbox": bbox})
+        tokens.append(
+            {
+                "orig_index": orig_index,
+                "text": text,
+                "confidence": conf,
+                "bbox": bbox,
+            }
+        )
     tokens.sort(key=lambda t: (t["bbox"][1], t["bbox"][0]))
     return tokens
+
+
+def load_tokens(ocr_path: Path, min_conf: float) -> List[dict]:
+    data = json.loads(ocr_path.read_text(encoding="utf-8"))
+    return _prepare_tokens(data.get("tokens", []), min_conf)
 
 
 def infer_dimensions(tokens: List[dict], image_path: Path | None) -> Tuple[int, int]:
@@ -90,12 +101,20 @@ def _symbol_with_span(index: int, bbox_width: float, canvas_width: int, cols: in
     return "[" + ("." * pad_left) + core + ("." * pad_right) + "]"
 
 
-def render_ascii_grid(tokens: List[dict], width: int, height: int, rows: int, cols: int, max_tokens: int | None) -> Tuple[str, List[str]]:
+def render_ascii_grid(
+    tokens: List[dict],
+    width: int,
+    height: int,
+    rows: int,
+    cols: int,
+    max_tokens: int | None,
+) -> Tuple[str, List[str]]:
     grid = [[" " for _ in range(cols)] for _ in range(rows)]
     legend: List[str] = []
     usable_tokens = tokens[: max_tokens or len(tokens)]
 
-    for idx, token in enumerate(usable_tokens, start=1):
+    for token in usable_tokens:
+        idx = token["orig_index"]
         left, top, bbox_w, bbox_h = token["bbox"]
         col = min(cols - 1, max(0, int((left + bbox_w / 2) / width * cols)))
         row = min(rows - 1, max(0, int((top + bbox_h / 2) / height * rows)))
@@ -106,6 +125,29 @@ def render_ascii_grid(tokens: List[dict], width: int, height: int, rows: int, co
     ascii_lines = ["".join(line).rstrip() for line in grid]
     ascii_block = "\n".join(ascii_lines)
     return ascii_block, legend
+
+
+def ascii_canvas_from_tokens(
+    ocr_tokens: List[dict],
+    width: int,
+    height: int,
+    *,
+    rows: int = 40,
+    cols: int = 80,
+    min_confidence: float = 70.0,
+    max_tokens: int | None = None,
+) -> Tuple[str, List[str]]:
+    """
+    Build an ASCII canvas + legend directly from a raw OCR token list.
+    """
+    if width <= 0:
+        width = 1
+    if height <= 0:
+        height = 1
+    tokens = _prepare_tokens(ocr_tokens, min_confidence)
+    if not tokens:
+        return "", []
+    return render_ascii_grid(tokens, width, height, rows, cols, max_tokens)
 
 
 def main() -> None:

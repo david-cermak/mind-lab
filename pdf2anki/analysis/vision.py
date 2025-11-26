@@ -10,6 +10,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from PIL import Image
+
+from pdf2anki.ocr_ascii_canvas import ascii_canvas_from_tokens
+
 try:
     from openai import OpenAI
 except ImportError:
@@ -49,37 +53,63 @@ def analyze_image_context(
         base_url=base_url or os.environ.get("PDF2ANKI_BASE_URL"),
         api_key=api_key or os.environ.get("OPENAI_API_KEY")
     )
-    
-    # Format OCR tokens with positions for grouping
-    ocr_formatted = []
-    for tok in ocr_tokens:
-        bbox = tok.get("bbox", [])
-        ocr_formatted.append({
-            "text": tok.get("text", ""),
-            "bbox": {"left": bbox[0], "top": bbox[1], "width": bbox[2], "height": bbox[3]},
-            "confidence": tok.get("confidence", 0)
-        })
-    
-    ocr_json = json.dumps(ocr_formatted, ensure_ascii=False, indent=2)
-    
+
+    try:
+        with Image.open(image_path) as img:
+            width, height = img.size
+    except Exception:
+        width = height = 1
+
+    ascii_canvas, legend = ascii_canvas_from_tokens(
+        ocr_tokens,
+        width,
+        height,
+        rows=int(os.environ.get("PDF2ANKI_ASCII_ROWS", "40")),
+        cols=int(os.environ.get("PDF2ANKI_ASCII_COLS", "80")),
+        min_confidence=float(os.environ.get("PDF2ANKI_ASCII_MIN_CONF", "70")),
+    )
+    legend_text = "\n".join(legend) if legend else "(no OCR tokens with sufficient confidence)"
+    ascii_section = (
+        "OCR label map (ASCII projection, indices are original OCR positions and may skip numbers):\n"
+        "```\n"
+        f"{ascii_canvas}\n"
+        "```\n"
+        "Legend:\n"
+        f"{legend_text}\n"
+    )
+
     system_msg = "You are a helpful assistant analyzing educational diagrams. Output valid JSON."
-    
+
     prompt = (
         "Analyze this educational diagram from a textbook.\n\n"
         f"Context from page text:\n{page_text[:1000]}\n\n"
-        f"OCR detected text labels with their positions:\n{ocr_json}\n\n"
+        f"{ascii_section}\n"
         "Tasks:\n"
         "1. Provide a concise description (2-3 sentences) of what this diagram shows.\n"
         "2. Group the text labels that belong together semantically (e.g., labels for the same structure, "
         "or labels that form a complete concept). Return groups as an array where each group contains "
-        "the indices of tokens that should be grouped together.\n\n"
+        "the indices of tokens (0-based original OCR indices from the legend; some numbers may be missing) that belong together.\n\n"
         "Return JSON with keys:\n"
         "- 'description': string\n"
-        "- 'groups': array of arrays, where each inner array contains token indices (0-based) that belong together\n"
+        "- 'groups': array of arrays, where each inner array contains token indices (0-based original OCR indices) that belong together\n"
         "- 'group_labels': optional array of descriptive labels for each group"
     )
 
+    debug_dir = os.environ.get("PDF2ANKI_VISION_DEBUG_DIR")
     image_url = _image_to_data_url(image_path)
+    if debug_dir:
+        try:
+            Path(debug_dir).mkdir(parents=True, exist_ok=True)
+            debug_input = {
+                "image_path": str(image_path),
+                "model": model,
+                "system": system_msg,
+                "prompt": prompt,
+            }
+            input_path = Path(debug_dir) / f"{image_path.stem}_vision_input.json"
+            input_path.write_text(json.dumps(debug_input, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logging.warning(f"Failed to write vision debug input: {exc}")
     
     try:
         response = client.chat.completions.create(
@@ -101,6 +131,13 @@ def analyze_image_context(
         content = response.choices[0].message.content
         if not content:
             return {"error": "Empty response"}
+        
+        if debug_dir:
+            try:
+                output_path = Path(debug_dir) / f"{image_path.stem}_vision_output.json"
+                output_path.write_text(content, encoding="utf-8")
+            except Exception as exc:
+                logging.warning(f"Failed to write vision debug output: {exc}")
             
         return json.loads(content)
         

@@ -10,8 +10,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from pdf2anki.generators import occlusion
 from pdf2anki.analysis import vision
+from pdf2anki.generators import occlusion
+from pdf2anki.ocr_ascii_canvas import ascii_canvas_from_tokens
 
 
 def estimate_tokens(text: str) -> int:
@@ -32,36 +33,49 @@ def print_prompt_preview(
     image_path: Path,
     page_text: str,
     ocr_tokens: List[Dict[str, Any]],
-    model: str = "gpt-4o",
+    *,
+    model: str,
+    image_width: int,
+    image_height: int,
+    ascii_rows: int = 40,
+    ascii_cols: int = 80,
+    min_confidence: float = 70.0,
 ) -> None:
     """Print what would be sent to the vision LLM without actually calling it."""
     
-    # Format OCR tokens with positions for grouping
-    ocr_formatted = []
-    for tok in ocr_tokens:
-        bbox = tok.get("bbox", [])
-        ocr_formatted.append({
-            "text": tok.get("text", ""),
-            "bbox": {"left": bbox[0], "top": bbox[1], "width": bbox[2], "height": bbox[3]},
-            "confidence": tok.get("confidence", 0)
-        })
-    
-    ocr_json = json.dumps(ocr_formatted, ensure_ascii=False, indent=2)
+    ascii_canvas, legend = ascii_canvas_from_tokens(
+        ocr_tokens,
+        image_width,
+        image_height,
+        rows=ascii_rows,
+        cols=ascii_cols,
+        min_confidence=min_confidence,
+    )
+    legend_text = "\n".join(legend) if legend else "(no OCR tokens after filtering)"
     
     system_msg = "You are a helpful assistant analyzing educational diagrams. Output valid JSON."
+    
+    ascii_section = (
+        f"ASCII map of detected labels (rows={ascii_rows}, cols={ascii_cols}; indices are original OCR positions and may have gaps):\n"
+        "```\n"
+        f"{ascii_canvas}\n"
+        "```\n"
+        "Legend (indices map to the ASCII markers and approximate widths; numbering starts at 0):\n"
+        f"{legend_text}\n"
+    )
     
     prompt = (
         "Analyze this educational diagram from a textbook.\n\n"
         f"Context from page text:\n{page_text[:1000]}\n\n"
-        f"OCR detected text labels with their positions:\n{ocr_json}\n\n"
+        f"{ascii_section}\n"
         "Tasks:\n"
         "1. Provide a concise description (2-3 sentences) of what this diagram shows.\n"
         "2. Group the text labels that belong together semantically (e.g., labels for the same structure, "
         "or labels that form a complete concept). Return groups as an array where each group contains "
-        "the indices of tokens that should be grouped together.\n\n"
+        "the indices of tokens (referenced via the legend, 0-based original OCR indices; numbers may be missing).\n\n"
         "Return JSON with keys:\n"
         "- 'description': string\n"
-        "- 'groups': array of arrays, where each inner array contains token indices (0-based) that belong together\n"
+        "- 'groups': array of arrays, where each inner array contains token indices (0-based original OCR indices) that belong together\n"
         "- 'group_labels': optional array of descriptive labels for each group"
     )
     
@@ -100,9 +114,9 @@ def print_prompt_preview(
     print("-" * 80)
     print(f"\nImage URL (truncated): {image_data_url}")
     print(f"\nOCR tokens sent ({len(ocr_tokens)} total):")
-    for i, tok in enumerate(ocr_tokens[:10], 1):
+    for i, tok in enumerate(ocr_tokens[:10]):
         bbox = tok.get("bbox", [])
-        print(f"  {i-1}. '{tok.get('text')}' @ ({bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}) (conf: {tok.get('confidence', 0):.1f}%)")
+        print(f"  {i}. '{tok.get('text')}' @ ({bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}) (conf: {tok.get('confidence', 0):.1f}%)")
     if len(ocr_tokens) > 10:
         print(f"  ... and {len(ocr_tokens) - 10} more tokens (see JSON above)")
     print("=" * 80)
@@ -111,8 +125,10 @@ def print_prompt_preview(
 def debug_single_image(
     image_id: str,
     output_dir: Path,
+    *,
     print_prompt: bool = True,
     skip_llm: bool = True,
+    vision_model: str,
 ) -> None:
     """Debug a single image occlusion card."""
     
@@ -188,7 +204,14 @@ def debug_single_image(
     
     # Print vision prompt if requested
     if print_prompt:
-        print_prompt_preview(img_path, page_text, ocr_tokens)
+        print_prompt_preview(
+            img_path,
+            page_text,
+            ocr_tokens,
+            model=vision_model,
+            image_width=w,
+            image_height=h,
+        )
     
     # Optionally call vision LLM if not skipping
     if not skip_llm:
@@ -200,7 +223,7 @@ def debug_single_image(
                 img_path,
                 page_text,
                 ocr_tokens,
-                model=os.getenv("PDF2ANKI_VISION_MODEL", "gpt-4o"),
+                model=vision_model,
                 base_url=os.getenv("PDF2ANKI_BASE_URL"),
                 api_key=os.getenv("OPENAI_API_KEY"),
             )
@@ -216,6 +239,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=Path("output"), help="Output directory")
     parser.add_argument("--no-prompt", action="store_true", help="Don't print prompt preview")
     parser.add_argument("--call-llm", action="store_true", help="Actually call the vision LLM (default: skip)")
+    parser.add_argument(
+        "--vision-model",
+        type=str,
+        default=None,
+        help="Override vision model (default: PDF2ANKI_VISION_MODEL or gpt-4o)",
+    )
     
     args = parser.parse_args()
     
@@ -225,12 +254,15 @@ def main():
         load_dotenv(env_path)
     else:
         load_dotenv()
+
+    vision_model = args.vision_model or os.getenv("PDF2ANKI_VISION_MODEL", "gpt-4o")
     
     debug_single_image(
         args.image_id,
         args.output_dir,
         print_prompt=not args.no_prompt,
         skip_llm=not args.call_llm,
+        vision_model=vision_model,
     )
 
 
