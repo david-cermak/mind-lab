@@ -36,6 +36,9 @@ def main():
     parser.add_argument("--max-text-cards", type=int, default=int(os.getenv("PDF2ANKI_MAX_TEXT_CARDS", "10")), help="Safety limit for text card generation")
     parser.add_argument("--tokens-per-card", type=int, default=int(os.getenv("PDF2ANKI_TOKENS_PER_CARD", "300")), help="Target tokens per card (lower = denser cards, default: 300)")
     
+    # Occlusion config
+    parser.add_argument("--occlude-all", type=lambda x: x.lower() == "true", default=os.getenv("PDF2ANKI_OCCLUDE_ALL", "true").lower() == "true", help="Occlusion mode: true (oi=1, hide all + guess one) or false (oi=0, hide one + guess one)")
+    
     # LLM Config - use .env defaults if not provided via CLI
     parser.add_argument("--llm-model", default=os.getenv("PDF2ANKI_LLM_MODEL", "gpt-4o-mini"), help="Model to use")
     parser.add_argument("--vision-model", default=os.getenv("PDF2ANKI_VISION_MODEL", "gpt-4o"), help="Vision model to use")
@@ -200,7 +203,7 @@ def main():
                 
                 # Generate occlusion with semantic groups if available
                 occlusion_data = occlusion.generate_occlusion_card_data(
-                    ocr_data, w, h, min_confidence=75.0, semantic_groups=semantic_groups
+                    ocr_data, w, h, min_confidence=75.0, semantic_groups=semantic_groups, occlude_all=args.occlude_all
                 )
                 
                 if occlusion_data["rectangles"]:

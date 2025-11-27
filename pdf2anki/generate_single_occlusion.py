@@ -34,6 +34,7 @@ def generate_single_occlusion_card(
     vision_model: str = None,
     base_url: str = None,
     api_key: str = None,
+    occlude_all: bool = True,
 ):
     """Generate a single occlusion card for the given image_id."""
     
@@ -147,7 +148,7 @@ def generate_single_occlusion_card(
     
     # Generate occlusion card
     occlusion_data = occlusion.generate_occlusion_card_data(
-        ocr_data, w, h, min_confidence=75.0, semantic_groups=semantic_groups
+        ocr_data, w, h, min_confidence=75.0, semantic_groups=semantic_groups, occlude_all=occlude_all
     )
     
     if not occlusion_data["rectangles"]:
@@ -182,6 +183,7 @@ def main():
     parser.add_argument("--vision-model", default=os.getenv("PDF2ANKI_VISION_MODEL", "gpt-4o"), help="Vision model")
     parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY"), help="API key")
     parser.add_argument("--base-url", default=os.getenv("PDF2ANKI_BASE_URL"), help="API base URL")
+    parser.add_argument("--occlude-all", type=lambda x: x.lower() == "true", default=os.getenv("PDF2ANKI_OCCLUDE_ALL", "true").lower() == "true", help="Occlusion mode: true (oi=1, hide all + guess one) or false (oi=0, hide one + guess one)")
     
     args = parser.parse_args()
     
@@ -193,6 +195,7 @@ def main():
         args.vision_model,
         args.base_url,
         args.api_key,
+        args.occlude_all,
     )
 
 

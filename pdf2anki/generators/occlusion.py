@@ -251,12 +251,20 @@ def calculate_bounding_boxes(
     return rectangles
 
 
-def create_occlusion_markup(rectangles: Sequence[Dict[str, Any]]) -> str:
+def create_occlusion_markup(rectangles: Sequence[Dict[str, Any]], occlude_all: bool = True) -> str:
+    """
+    Create Anki image occlusion markup.
+    
+    Args:
+        rectangles: List of rectangle dictionaries with normalized coordinates
+        occlude_all: If True (oi=1), hide all labels and guess one. If False (oi=0), hide one and guess one.
+    """
+    oi_value = 1 if occlude_all else 0
     parts = []
     for idx, rect in enumerate(rectangles, start=1):
         norm = rect["bbox_normalized"]
         parts.append(
-            f"{{{{c{idx}::image-occlusion:rect:left={norm['left']}:top={norm['top']}:width={norm['width']}:height={norm['height']}:oi=1}}}}"
+            f"{{{{c{idx}::image-occlusion:rect:left={norm['left']}:top={norm['top']}:width={norm['width']}:height={norm['height']}:oi={oi_value}}}}}"
         )
     return "<br>".join(parts)
 
@@ -269,6 +277,7 @@ def generate_occlusion_card_data(
     proximity_threshold: float = 90.0,
     padding: float = 8.0,
     semantic_groups: Optional[List[List[int]]] = None,
+    occlude_all: bool = True,
 ) -> Dict[str, Any]:
     """
     Generate occlusion rectangles and markup from OCR data.
@@ -283,6 +292,7 @@ def generate_occlusion_card_data(
         padding: Padding around bounding boxes
         semantic_groups: Optional list of token index groups from vision LLM
             (indices refer to original OCR tokens before confidence filtering)
+        occlude_all: If True (oi=1), hide all labels and guess one. If False (oi=0), hide one and guess one.
     
     Returns:
         Dictionary with rectangles, markup, token_count, and group_count
@@ -331,7 +341,7 @@ def generate_occlusion_card_data(
     
     # Calculate boxes
     rects = calculate_bounding_boxes(groups, padding, image_width, image_height)
-    markup = create_occlusion_markup(rects)
+    markup = create_occlusion_markup(rects, occlude_all=occlude_all)
     
     return {
         "rectangles": rects,

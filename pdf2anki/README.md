@@ -55,3 +55,45 @@ python -m pdf2anki.debug_text_cards --output-dir output
 ```
 
 Use `--regenerate` to force new LLM calls or `--cards-json /path/to/text_cards.json` to point at a specific cache.
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the `pdf2anki/` directory (or copy from `.env.example`) to configure defaults:
+
+```bash
+# API Configuration
+OPENAI_API_KEY=sk-...
+PDF2ANKI_BASE_URL=https://api.openai.com/v1
+PDF2ANKI_LLM_MODEL=gpt-4o-mini
+PDF2ANKI_VISION_MODEL=gpt-4o
+
+# Pipeline Settings
+PDF2ANKI_OUTPUT_DIR=output
+PDF2ANKI_FINAL_APKG=result.apkg
+PDF2ANKI_MAX_TEXT_CARDS=10
+PDF2ANKI_TOKENS_PER_CARD=300
+
+# Image Occlusion Mode
+# true = oi=1 (hide all labels + guess one) - default
+# false = oi=0 (hide one label + guess one)
+PDF2ANKI_OCCLUDE_ALL=true
+```
+
+### Image Occlusion Mode
+
+The `PDF2ANKI_OCCLUDE_ALL` environment variable (or `--occlude-all` CLI flag) controls how occlusion cards work:
+
+- **`true` (oi=1)**: Hide all labels, reveal one at a time. Good for learning all parts of a diagram.
+- **`false` (oi=0)**: Hide one label at a time. Good for focused practice on individual labels.
+
+You can override this per-run using the `--occlude-all` flag:
+
+```bash
+# Generate cards with oi=0 (hide one + guess one)
+python -m pdf2anki.main book.pdf --occlude-all false
+
+# Generate single occlusion card with oi=0
+python -m pdf2anki.generate_single_occlusion page3_img0_xref23 --occlude-all false
+```

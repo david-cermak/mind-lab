@@ -105,6 +105,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the vision LLM step and rely on spatial grouping only",
     )
+    parser.add_argument(
+        "--occlude-all",
+        type=lambda x: x.lower() == "true",
+        default=os.getenv("PDF2ANKI_OCCLUDE_ALL", "true").lower() == "true",
+        help="Occlusion mode: true (oi=1, hide all + guess one) or false (oi=0, hide one + guess one)",
+    )
     return parser.parse_args()
 
 
@@ -142,6 +148,7 @@ def main() -> None:
         metadata_path,
         ocr_dir,
         model=None if args.disable_vision else args.vision_model,
+        occlude_all=args.occlude_all,
         base_url=args.base_url,
         api_key=args.api_key,
         min_confidence=args.min_confidence,

@@ -30,6 +30,7 @@ def generate_occlusion_cards_from_plan(
     min_confidence: float = 75.0,
     max_cards: Optional[int] = None,
     disable_vision: bool = False,
+    occlude_all: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Run the occlusion workflow for every image_occlusion plan item.
@@ -117,6 +118,7 @@ def generate_occlusion_cards_from_plan(
             height,
             min_confidence=min_confidence,
             semantic_groups=semantic_groups,
+            occlude_all=occlude_all,
         )
 
         rectangles = occlusion_data.get("rectangles") or []
