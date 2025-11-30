@@ -4,12 +4,13 @@ Convert PDF textbooks into continuous narrative text suitable for text-to-speech
 
 ## Overview
 
-The audiobook pipeline consists of 4 stages:
+The audiobook pipeline consists of 5 stages:
 
 1. **Stage 0: Prepare Pages** - Enhance page data with image descriptions
 2. **Stage 1: Split Text** - Divide pages into manageable chunks (~50K tokens)
 3. **Stage 2: Process Chunks** - Convert structured text to continuous narrative
 4. **Stage 3: Combine** (Optional) - Merge narratives into final output files
+5. **Stage 4: Text-to-Speech** - Convert narrative text to audio files
 
 ## Prerequisites
 
@@ -39,6 +40,9 @@ python -m pdf2anki.audiobook.processor --output-dir output --language cs --style
 
 # Stage 3: Combine (optional)
 python -m pdf2anki.audiobook.combiner --output-dir output --output-format single
+
+# Stage 4: Convert to audio
+python -m pdf2anki.audiobook.tts --output-dir output --language-code cs-CZ
 ```
 
 ## Stage-by-Stage Guide
@@ -208,6 +212,86 @@ python -m pdf2anki.audiobook.combiner \
 
 ---
 
+### Stage 4: Text-to-Speech (`tts.py`)
+
+**Purpose**: Convert narrative text files to audio using Google Cloud Text-to-Speech.
+
+**What it does**:
+- Loads processed narratives from Stage 2
+- Splits long texts into chunks (Google TTS limit: 5000 chars per request)
+- Synthesizes each chunk using Google Cloud TTS
+- Combines audio chunks into complete MP3 files
+- Saves audio files as `audiobook/audio/chunk_XXX.mp3`
+- Outputs metadata with file sizes and processing info
+
+**Prerequisites**:
+- Google Cloud account with Text-to-Speech API enabled
+- Service account credentials JSON file
+- `google-cloud-texttospeech` package installed
+
+**Setup**:
+1. Enable Google Cloud Text-to-Speech API in your GCP project
+2. Create a service account and download credentials JSON
+3. Set environment variable:
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/credentials.json"
+   ```
+   Or pass via CLI: `--credentials /path/to/credentials.json`
+
+**Usage**:
+```bash
+python -m pdf2anki.audiobook.tts \
+  --output-dir output \
+  --language-code cs-CZ \
+  --ssml-gender NEUTRAL \
+  --audio-encoding MP3
+```
+
+**Parameters**:
+- `--language-code`: Language code (default: cs-CZ)
+- `--voice-name`: Specific voice name (optional, e.g., "cs-CZ-Wavenet-A")
+- `--ssml-gender`: Voice gender - `NEUTRAL`, `MALE`, or `FEMALE` (default: NEUTRAL)
+- `--audio-encoding`: Audio format - `MP3`, `LINEAR16`, or `OGG_OPUS` (default: MP3)
+- `--credentials`: Path to Google Cloud credentials JSON (optional if env var set)
+
+**Output**:
+- `output/audiobook/audio/chunk_001.mp3` - Audio file per chunk
+- `output/audiobook/audio_metadata.json` - Processing metadata
+
+**Example audio metadata entry**:
+```json
+{
+  "chunk_id": "chunk_001",
+  "success": true,
+  "file": "audiobook/audio/chunk_001.mp3",
+  "file_size_bytes": 5242880,
+  "file_size_mb": 5.0,
+  "text_chars": 45230,
+  "tts_chunks": 10
+}
+```
+
+**Notes**:
+- Long texts are automatically split at sentence/paragraph boundaries
+- Each chunk is synthesized separately and then combined
+- Google TTS has a 5000 byte limit per request (not characters!)
+- UTF-8 characters (especially Czech with diacritics) can be multi-byte, so the code uses byte length
+- Uses a conservative 4500 byte limit per chunk to ensure we stay under the limit
+- Audio files are saved as MP3 by default (can be changed to LINEAR16 or OGG_OPUS)
+
+**Voice Selection**:
+- If `--voice-name` is not specified, Google TTS will select a default voice for the language
+- To list available voices for a language:
+  ```python
+  from google.cloud import texttospeech
+  client = texttospeech.TextToSpeechClient()
+  voices = client.list_voices(language_code="cs-CZ")
+  for voice in voices.voices:
+      print(f"{voice.name}: {voice.ssml_gender}")
+  ```
+
+---
+
 ## Configuration
 
 ### Environment Variables
@@ -221,6 +305,13 @@ PDF2ANKI_AUDIOBOOK_LANGUAGE=cs
 PDF2ANKI_AUDIOBOOK_STYLE=educational
 PDF2ANKI_AUDIOBOOK_OVERLAP=0
 PDF2ANKI_TEMPERATURE=0.7  # LLM temperature (auto-adjusts for gpt-5)
+
+# TTS Configuration
+PDF2ANKI_TTS_LANGUAGE_CODE=cs-CZ
+PDF2ANKI_TTS_VOICE_NAME=  # Optional: specific voice name
+PDF2ANKI_TTS_GENDER=NEUTRAL  # NEUTRAL, MALE, or FEMALE
+PDF2ANKI_TTS_ENCODING=MP3  # MP3, LINEAR16, or OGG_OPUS
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json
 ```
 
 ### CLI Overrides
@@ -232,6 +323,7 @@ python -m pdf2anki.audiobook.prepare_pages --help
 python -m pdf2anki.audiobook.splitter --help
 python -m pdf2anki.audiobook.processor --help
 python -m pdf2anki.audiobook.combiner --help
+python -m pdf2anki.audiobook.tts --help
 ```
 
 ## Complete Example
@@ -256,22 +348,37 @@ python -m pdf2anki.audiobook.processor \
   --language cs \
   --style educational
 
-# 6. Stage 3: Combine into single file
+# 6. Stage 3: Combine into single file (optional)
 python -m pdf2anki.audiobook.combiner \
   --output-dir output \
   --output-format single
 
-# Result: output/audiobook/full_narrative.txt
+# 7. Stage 4: Convert to audio
+python -m pdf2anki.audiobook.tts \
+  --output-dir output \
+  --language-code cs-CZ \
+  --ssml-gender NEUTRAL
+
+# Result: 
+# - output/audiobook/full_narrative.txt (if Stage 3 run)
+# - output/audiobook/audio/chunk_001.mp3, chunk_002.mp3, ...
 ```
 
 ## Output Format
 
+### Narrative Text
 The final narrative text is:
 - **Plain text** (no markdown)
 - **Paragraphs** separated by double newlines
 - **Natural pauses** indicated by sentence structure
 - **Image descriptions** integrated seamlessly
-- **Ready for TTS** engines (Azure TTS, Google TTS, ElevenLabs, etc.)
+
+### Audio Files
+After Stage 4, audio files are:
+- **MP3 format** (or LINEAR16/OGG_OPUS if specified)
+- **One file per chunk** (chunk_001.mp3, chunk_002.mp3, ...)
+- **High quality** Google Cloud TTS synthesis
+- **Ready for playback** in any audio player
 
 ## Troubleshooting
 
@@ -308,6 +415,18 @@ Check:
 - Chunks file exists: `output/audiobook/chunks.json`
 - Pages file exists: `output/audiobook/pages.jsonl`
 
+### TTS Synthesis Fails
+
+If Stage 4 fails:
+- Verify `GOOGLE_APPLICATION_CREDENTIALS` is set correctly
+- Check that Google Cloud Text-to-Speech API is enabled in your project
+- Ensure service account has Text-to-Speech permissions
+- Verify language code is supported (e.g., "cs-CZ" for Czech)
+- Check that `google-cloud-texttospeech` is installed:
+  ```bash
+  pip install google-cloud-texttospeech
+  ```
+
 ## Integration with Existing Pipeline
 
 The audiobook pipeline reuses:
@@ -332,23 +451,28 @@ output/
     │   ├── chunk_002.txt
     │   └── ...
     ├── narratives_metadata.json
-    └── full_narrative.txt      # Stage 3 output (if single format)
+    ├── full_narrative.txt      # Stage 3 output (if single format)
+    ├── audio/                   # Stage 4 output
+    │   ├── chunk_001.mp3
+    │   ├── chunk_002.mp3
+    │   └── ...
+    └── audio_metadata.json      # Stage 4 metadata
 ```
 
 ## Next Steps
 
-After generating the narrative text, you can:
+After generating audio files, you can:
 
-1. **Convert to audio** using TTS services:
-   - Azure Cognitive Services
-   - Google Cloud Text-to-Speech
-   - ElevenLabs
-   - Amazon Polly
+1. **Combine audio files** into a single audiobook using audio editing tools (ffmpeg, Audacity, etc.)
 
-2. **Review and edit** the narrative text before TTS conversion
+2. **Review and edit** the narrative text before TTS conversion (re-run Stage 2 if needed)
 
 3. **Split into chapters** for better organization:
    ```bash
    python -m pdf2anki.audiobook.combiner --output-format chapters
    ```
+
+4. **Use different TTS voices** by specifying `--voice-name` with a specific voice identifier
+
+5. **Adjust audio quality** by changing `--audio-encoding` (MP3 for compatibility, LINEAR16 for highest quality)
 
