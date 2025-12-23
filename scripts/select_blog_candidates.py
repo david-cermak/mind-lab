@@ -19,11 +19,12 @@ Configuration is done similarly to scripts/test_openai_api.py:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Iterable, List, Tuple, Dict, Any
+from typing import Iterable, List, Tuple, Dict, Any, Optional
 
 try:
     from dotenv import load_dotenv
@@ -209,35 +210,115 @@ def extract_previous_posts_summary(posts_text: str, max_chars: int = 6000) -> st
     return text[: max_chars] + "\n...\n[truncated]"
 
 
-def parse_news_items(markdown: str) -> List[str]:
+def _parse_bold_field_line(line: str) -> tuple[str, str] | None:
     """
-    Parse `news2.md`-style markdown into a list of item blocks.
+    Parse lines like:
+      - **URL**: https://...
+      - **Summary**: ...
+      - **Date**: 2025-01-01T...
+    """
+    if not line.startswith("- **") or "**:" not in line:
+        return None
+    # Split at the first '**:' occurrence
+    prefix, value = line.split("**:", 1)
+    # prefix looks like "- **URL"
+    key = prefix.replace("- **", "").strip()
+    value = value.strip()
+    if not key:
+        return None
+    return key, value
+
+
+def parse_news_items(markdown: str) -> List[Dict[str, Any]]:
+    """
+    Parse `news2.md`/`news9.md`-style markdown into a list of item dicts.
 
     Each item starts with a line like '### 1. Title' and includes following lines
     until the next '### ' heading or end of file.
     """
     lines = markdown.splitlines()
-    items: List[str] = []
-    current: List[str] = []
+    items: List[Dict[str, Any]] = []
+    current_lines: List[str] = []
 
     for line in lines:
         if line.startswith("### "):
             # Start of a new item
-            if current:
-                items.append("\n".join(current).strip())
-                current = []
-        if line.startswith("### ") or current:
-            current.append(line)
+            if current_lines:
+                items.append(_parse_single_item_block("\n".join(current_lines).strip()))
+                current_lines = []
+        if line.startswith("### ") or current_lines:
+            current_lines.append(line)
 
-    if current:
-        items.append("\n".join(current).strip())
+    if current_lines:
+        items.append(_parse_single_item_block("\n".join(current_lines).strip()))
 
     # Filter out possible leading metadata like "## Search results..."
-    items = [item for item in items if item.startswith("### ")]
+    items = [item for item in items if isinstance(item, dict) and str(item.get("raw", "")).startswith("### ")]
     return items
 
 
-def chunk_items(items: List[str], items_per_chunk: int, max_items: int = 0) -> List[Tuple[int, str]]:
+def _parse_single_item_block(block: str) -> Dict[str, Any]:
+    lines = block.splitlines()
+    header = lines[0].strip() if lines else ""
+    # Expect header like: "### 123. Some title"
+    item_id: Optional[int] = None
+    title = header
+    if header.startswith("### "):
+        after = header[4:].strip()
+        if ". " in after:
+            maybe_num, rest = after.split(". ", 1)
+            try:
+                item_id = int(maybe_num.strip())
+                title = rest.strip()
+            except ValueError:
+                title = after
+        else:
+            title = after
+
+    url: str = ""
+    summary: str = ""
+    date_str: str = ""
+    for line in lines[1:]:
+        parsed = _parse_bold_field_line(line.strip())
+        if not parsed:
+            continue
+        key, value = parsed
+        k = key.lower()
+        if k == "url":
+            url = value
+        elif k == "summary":
+            summary = value
+        elif k == "date":
+            date_str = value
+
+    return {
+        "item_id": item_id,
+        "title": title,
+        "url": url,
+        "summary": summary,
+        "date": date_str,
+        "raw": block,
+    }
+
+
+def _render_item_for_prompt(item: Dict[str, Any]) -> str:
+    item_id = item.get("item_id")
+    title = item.get("title") or ""
+    url = item.get("url") or ""
+    summary = item.get("summary") or ""
+    date_str = item.get("date") or ""
+    parts: List[str] = []
+    parts.append(f"### {item_id}. {title}" if item_id is not None else f"### {title}")
+    if url:
+        parts.append(f"- **URL**: {url}")
+    if summary:
+        parts.append(f"- **Summary**: {summary}")
+    if date_str:
+        parts.append(f"- **Date**: {date_str}")
+    return "\n".join(parts).strip()
+
+
+def chunk_items(items: List[Dict[str, Any]], items_per_chunk: int, max_items: int = 0) -> List[Tuple[int, str]]:
     """
     Group items into chunks of approx. `items_per_chunk`.
 
@@ -252,8 +333,12 @@ def chunk_items(items: List[str], items_per_chunk: int, max_items: int = 0) -> L
         end = start + items_per_chunk
         sub_items = items[start:end]
         labelled: List[str] = []
-        for global_idx, item in enumerate(sub_items, start=start + 1):
-            labelled.append(f"ITEM {global_idx}:\n{item}")
+        for item in sub_items:
+            item_id = item.get("item_id")
+            # Fallback to list position if item_id missing
+            if item_id is None:
+                item_id = start + len(labelled) + 1
+            labelled.append(f"ITEM {item_id}:\n{_render_item_for_prompt(item)}")
         chunk_text = "\n\n".join(labelled)
         chunks.append((chunk_idx, chunk_text))
     return chunks
@@ -263,6 +348,7 @@ def build_messages(
     previous_posts_summary: str,
     chunk_text: str,
     max_candidates_per_chunk: int,
+    today: str,
 ) -> list[dict[str, Any]]:
     """
     Build chat messages for a single LLM call.
@@ -274,6 +360,7 @@ def build_messages(
     """
     system_content = (
         "You are helping an embedded / firmware developer decide what to write about next.\n"
+        f"Today is {today}.\n"
         "You will receive:\n"
         "  1) A description of previous blog posts (topics, titles, and descriptions).\n"
         "  2) A chunk of news/search results, each labelled as ITEM N.\n\n"
@@ -281,6 +368,8 @@ def build_messages(
         f"{max_candidates_per_chunk} of the most promising items in this chunk that would make\n"
         "interesting *new* blog posts or natural follow-ups to existing posts.\n\n"
         "Guidelines:\n"
+        "- Only choose items that are recent (roughly within the last few months relative to today).\n"
+        "  If an ITEM includes a Date and it looks old, do not pick it.\n"
         "- Prefer items that are connected to previous topics (embedded, C/C++, ESP32, fuzzing,\n"
         "  networking, secure channels, cryptography, TTCN-3, MQTT, Kafka, console/tunnelling, etc.),\n"
         "  but avoid repeating essentially the same post.\n"
@@ -309,7 +398,7 @@ def build_messages(
         "News/search results chunk:\n"
         "--------------------------\n"
         f"{chunk_text}\n\n"
-        f"Select up to {max_candidates_per_chunk} best candidates from this chunk."
+        f"Select up to {max_candidates_per_chunk} best candidates from this chunk (recent items only)."
     )
 
     return [
@@ -324,9 +413,10 @@ def call_llm_for_chunk(
     previous_posts_summary: str,
     chunk_text: str,
     max_candidates_per_chunk: int,
+    today: str,
 ) -> Dict[str, Any]:
     """Call the LLM once for a single chunk and parse JSON response."""
-    messages = build_messages(previous_posts_summary, chunk_text, max_candidates_per_chunk)
+    messages = build_messages(previous_posts_summary, chunk_text, max_candidates_per_chunk, today=today)
 
     response = client.chat.completions.create(
         model=model,
@@ -375,6 +465,8 @@ def print_summary(candidates: List[Dict[str, Any]]) -> None:
         item_id = c.get("item_id")
         title = c.get("title") or "<no title>"
         source_title = c.get("source_title") or ""
+        url = c.get("link") or c.get("url") or ""
+        summary = c.get("summary") or ""
         reason = c.get("reason") or ""
         angle = c.get("angle") or ""
 
@@ -383,6 +475,10 @@ def print_summary(candidates: List[Dict[str, Any]]) -> None:
             print(f"   - Source ITEM: {item_id}")
         if source_title:
             print(f"   - Source title: {source_title}")
+        if url:
+            print(f"   - Link: {url}")
+        if summary:
+            print(f"   - Summary: {summary}")
         if reason:
             print(f"   - Why: {reason}")
         if angle:
@@ -391,14 +487,13 @@ def print_summary(candidates: List[Dict[str, Any]]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if OpenAI is None:
         print(
             "Error: openai package is required. Install with: pip install openai",
             file=sys.stderr,
         )
         return 1
-
-    args = parse_args(argv)
 
     try:
         base_url, model, api_key = get_config(
@@ -426,6 +521,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     chunks = chunk_items(items, args.items_per_chunk, max_items=args.max_items)
+    items_by_id: Dict[int, Dict[str, Any]] = {}
+    for idx, item in enumerate(items, start=1):
+        item_id = item.get("item_id") or idx
+        try:
+            items_by_id[int(item_id)] = item
+        except Exception:
+            continue
+
+    today = dt.date.today().isoformat()
 
     print(f"Loaded {len(items)} news items, {len(chunks)} chunk(s).", file=sys.stderr)
     print(f"Using model: {model}", file=sys.stderr)
@@ -442,12 +546,27 @@ def main(argv: list[str] | None = None) -> int:
                 previous_posts_summary=previous_posts_summary,
                 chunk_text=chunk_text,
                 max_candidates_per_chunk=args.max_candidates_per_chunk,
+                today=today,
             )
             all_results.append(result)
         except Exception as e:  # pragma: no cover - network/LLM errors
             print(f"Error calling API for chunk {chunk_idx}: {e}", file=sys.stderr)
 
     merged = merge_candidates(all_results)
+    # Enrich merged candidates with original data (url/summary) from the news item.
+    for c in merged:
+        item_id = c.get("item_id")
+        try:
+            src = items_by_id.get(int(item_id)) if item_id is not None else None
+        except Exception:
+            src = None
+        if not src:
+            continue
+        if src.get("url"):
+            c["url"] = src.get("url")
+            c["link"] = src.get("url")
+        if src.get("summary"):
+            c["summary"] = src.get("summary")
 
     # Determine output file path (default: selected.json next to the news file)
     if args.output_file:
