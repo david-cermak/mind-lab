@@ -105,6 +105,8 @@ def get_config(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
+    # Load .env early so defaults can depend on it (python-dotenv is optional).
+    load_env_file()
     parser = argparse.ArgumentParser(
         description="Select best blog post candidates from news/search results",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -170,6 +172,15 @@ Examples:
         help="Maximum number of candidates the LLM should return per chunk (default: 3).",
     )
     parser.add_argument(
+        "--max-sources-per-candidate",
+        type=int,
+        default=get_max_sources_per_candidate(default=3),
+        help=(
+            "Maximum number of source items a single blog candidate can combine "
+            "(default: 3; also configurable via BLOG_CANDIDATE_MAX_SOURCES env var)."
+        ),
+    )
+    parser.add_argument(
         "--max-items",
         type=int,
         default=0,
@@ -195,6 +206,46 @@ Examples:
 def load_text(path: str | Path) -> str:
     p = Path(path)
     return p.read_text(encoding="utf-8")
+
+
+def get_max_sources_per_candidate(default: int = 3) -> int:
+    """
+    Get maximum number of source items a single candidate can reference.
+
+    Controlled via environment variable:
+        BLOG_CANDIDATE_MAX_SOURCES
+    """
+    load_env_file()
+    raw = os.getenv("BLOG_CANDIDATE_MAX_SOURCES") or os.getenv("MAX_SOURCES_PER_CANDIDATE") or ""
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        if value <= 0:
+            return default
+        return value
+    except ValueError:
+        return default
+
+
+def is_official_espressif_documentation(url: str, title: str = "") -> bool:
+    """
+    Heuristic filter for official Espressif documentation.
+
+    We intentionally do NOT block all Espressif content (e.g. blog posts, GitHub),
+    only the official documentation site(s).
+    """
+    u = (url or "").strip().lower()
+    t = (title or "").strip().lower()
+    if not u and not t:
+        return False
+    # Primary official docs host (ESP-IDF programming guide, API reference, etc.)
+    if "docs.espressif.com" in u:
+        return True
+    # Very common docs phrasing in titles (extra safety if URL missing)
+    if "esp-idf programming guide" in t and "espressif" in t:
+        return True
+    return False
 
 
 def extract_previous_posts_summary(posts_text: str, max_chars: int = 6000) -> str:
@@ -348,6 +399,7 @@ def build_messages(
     previous_posts_summary: str,
     chunk_text: str,
     max_candidates_per_chunk: int,
+    max_sources_per_candidate: int,
     today: str,
 ) -> list[dict[str, Any]]:
     """
@@ -365,8 +417,9 @@ def build_messages(
         "  1) A description of previous blog posts (topics, titles, and descriptions).\n"
         "  2) A chunk of news/search results, each labelled as ITEM N.\n\n"
         "Your job is to pick up to "
-        f"{max_candidates_per_chunk} of the most promising items in this chunk that would make\n"
-        "interesting *new* blog posts or natural follow-ups to existing posts.\n\n"
+        f"{max_candidates_per_chunk} promising blog-post candidates based on this chunk.\n"
+        "A candidate may be based on a single ITEM, or it may combine multiple related ITEMs into\n"
+        "one stronger post idea.\n\n"
         "Guidelines:\n"
         "- Only choose items that are recent (roughly within the last few months relative to today).\n"
         "  If an ITEM includes a Date and it looks old, do not pick it.\n"
@@ -376,18 +429,27 @@ def build_messages(
         "- Reward novelty, concrete technical depth, and opportunities for experiments, PoCs, or\n"
         "  conference-talk-style writeups.\n"
         "- Ignore obviously off-topic or generic items.\n\n"
+        "Hard exclusions:\n"
+        "- Do NOT select official Espressif documentation pages (especially anything on docs.espressif.com).\n\n"
         "Output strictly valid JSON with the following structure:\n"
         "{\n"
         '  "candidates": [\n'
         "    {\n"
-        '      "item_id": <integer ITEM number>,\n'
+        f'      "item_ids": [<integer ITEM number>, ...],  // 1 to {max_sources_per_candidate} entries\n'
         '      "title": "short working blog post title",\n'
-        '      "source_title": "title or main line from the news item",\n'
+        '      "source_title": ["title or main line from each chosen news item", ...],\n'
+        '      "url": ["url for each chosen news item", ...],\n'
+        '      "link": ["same as url (for convenience)", ...],\n'
+        '      "summary": ["summary/snippet for each chosen news item", ...],\n'
         '      "reason": "why this is a good fit given previous posts",\n'
         '      "angle": "suggested angle or twist for the post"\n'
         "    }\n"
         "  ]\n"
         "}\n"
+        f"Rules:\n"
+        f"- item_ids must reference ITEM numbers from this chunk only.\n"
+        f"- item_ids length must be between 1 and {max_sources_per_candidate}.\n"
+        f"- source_title/url/link/summary arrays must match item_ids length and order.\n"
         "Return an empty list if nothing is suitable.\n"
     )
 
@@ -413,10 +475,17 @@ def call_llm_for_chunk(
     previous_posts_summary: str,
     chunk_text: str,
     max_candidates_per_chunk: int,
+    max_sources_per_candidate: int,
     today: str,
 ) -> Dict[str, Any]:
     """Call the LLM once for a single chunk and parse JSON response."""
-    messages = build_messages(previous_posts_summary, chunk_text, max_candidates_per_chunk, today=today)
+    messages = build_messages(
+        previous_posts_summary,
+        chunk_text,
+        max_candidates_per_chunk,
+        max_sources_per_candidate=max_sources_per_candidate,
+        today=today,
+    )
 
     response = client.chat.completions.create(
         model=model,
@@ -440,18 +509,52 @@ def call_llm_for_chunk(
 
 
 def merge_candidates(all_chunks_results: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge candidates from all chunks, de-duplicating by (item_id, title)."""
+    """Merge candidates from all chunks, de-duplicating by (item_ids, title)."""
     merged: List[Dict[str, Any]] = []
     seen: set[tuple[Any, Any]] = set()
 
     for result in all_chunks_results:
         for c in result.get("candidates", []):
-            key = (c.get("item_id"), c.get("title"))
+            ids = normalize_item_ids(c)
+            # Dedup independent of ordering of ids (but keep original order in output).
+            key = (tuple(sorted(ids)), c.get("title"))
             if key in seen:
                 continue
             seen.add(key)
             merged.append(c)
     return merged
+
+
+def normalize_item_ids(candidate: Dict[str, Any]) -> tuple[int, ...]:
+    """
+    Normalize candidate item references into a stable tuple[int, ...].
+
+    Supports both the new schema ("item_ids": [...]) and legacy ("item_id": int).
+    """
+    raw_ids = candidate.get("item_ids")
+    ids: List[int] = []
+    if isinstance(raw_ids, list):
+        for x in raw_ids:
+            try:
+                ids.append(int(x))
+            except Exception:
+                continue
+    else:
+        raw_id = candidate.get("item_id")
+        try:
+            if raw_id is not None:
+                ids = [int(raw_id)]
+        except Exception:
+            ids = []
+    # Dedup while keeping order
+    seen: set[int] = set()
+    out: List[int] = []
+    for i in ids:
+        if i in seen:
+            continue
+        seen.add(i)
+        out.append(i)
+    return tuple(out)
 
 
 def print_summary(candidates: List[Dict[str, Any]]) -> None:
@@ -462,7 +565,7 @@ def print_summary(candidates: List[Dict[str, Any]]) -> None:
 
     print("Merged blog post candidates:\n")
     for idx, c in enumerate(candidates, start=1):
-        item_id = c.get("item_id")
+        item_ids = list(normalize_item_ids(c))
         title = c.get("title") or "<no title>"
         source_title = c.get("source_title") or ""
         url = c.get("link") or c.get("url") or ""
@@ -471,13 +574,26 @@ def print_summary(candidates: List[Dict[str, Any]]) -> None:
         angle = c.get("angle") or ""
 
         print(f"{idx}. {title}")
-        if item_id is not None:
-            print(f"   - Source ITEM: {item_id}")
-        if source_title:
+        if item_ids:
+            print(f"   - Source ITEM(s): {', '.join(str(x) for x in item_ids)}")
+        # Handle either string or list values for backwards/forwards compatibility
+        if isinstance(source_title, list):
+            for i, st in enumerate(source_title, start=1):
+                if st:
+                    print(f"   - Source title {i}: {st}")
+        elif source_title:
             print(f"   - Source title: {source_title}")
-        if url:
+        if isinstance(url, list):
+            for i, u in enumerate(url, start=1):
+                if u:
+                    print(f"   - Link {i}: {u}")
+        elif url:
             print(f"   - Link: {url}")
-        if summary:
+        if isinstance(summary, list):
+            for i, s in enumerate(summary, start=1):
+                if s:
+                    print(f"   - Summary {i}: {s}")
+        elif summary:
             print(f"   - Summary: {summary}")
         if reason:
             print(f"   - Why: {reason}")
@@ -515,9 +631,15 @@ def main(argv: list[str] | None = None) -> int:
     previous_posts_summary = extract_previous_posts_summary(posts_text)
 
     items = parse_news_items(news_text)
+    # Filter out official Espressif documentation from consideration.
+    items = [
+        it
+        for it in items
+        if not is_official_espressif_documentation(str(it.get("url") or ""), str(it.get("title") or ""))
+    ]
 
     if not items:
-        print("No news items found in the input file.", file=sys.stderr)
+        print("No eligible news items found (after filtering).", file=sys.stderr)
         return 1
 
     chunks = chunk_items(items, args.items_per_chunk, max_items=args.max_items)
@@ -546,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
                 previous_posts_summary=previous_posts_summary,
                 chunk_text=chunk_text,
                 max_candidates_per_chunk=args.max_candidates_per_chunk,
+                max_sources_per_candidate=args.max_sources_per_candidate,
                 today=today,
             )
             all_results.append(result)
@@ -553,20 +676,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error calling API for chunk {chunk_idx}: {e}", file=sys.stderr)
 
     merged = merge_candidates(all_results)
-    # Enrich merged candidates with original data (url/summary) from the news item.
+    # Enrich merged candidates with original data (url/summary/title) from the news items.
     for c in merged:
-        item_id = c.get("item_id")
-        try:
-            src = items_by_id.get(int(item_id)) if item_id is not None else None
-        except Exception:
-            src = None
-        if not src:
+        ids = list(normalize_item_ids(c))
+        if not ids:
             continue
-        if src.get("url"):
-            c["url"] = src.get("url")
-            c["link"] = src.get("url")
-        if src.get("summary"):
-            c["summary"] = src.get("summary")
+        # Cap to configured limit (safety in case the model ignores instructions)
+        ids = ids[: max(1, int(args.max_sources_per_candidate))]
+        # Store back normalized ids
+        c["item_ids"] = ids
+        # Materialize per-source arrays from original items
+        src_titles: List[str] = []
+        src_urls: List[str] = []
+        src_summaries: List[str] = []
+        for item_id in ids:
+            src = items_by_id.get(int(item_id))
+            if not src:
+                src_titles.append("")
+                src_urls.append("")
+                src_summaries.append("")
+                continue
+            src_titles.append(str(src.get("title") or ""))
+            src_urls.append(str(src.get("url") or ""))
+            src_summaries.append(str(src.get("summary") or ""))
+        # Populate arrays (override to keep schema consistent)
+        c["source_title"] = src_titles
+        c["url"] = src_urls
+        c["link"] = list(src_urls)
+        c["summary"] = src_summaries
+        # Optional legacy compatibility: keep a primary item_id
+        c["item_id"] = ids[0] if ids else None
 
     # Determine output file path (default: selected.json next to the news file)
     if args.output_file:
