@@ -4,6 +4,7 @@ This folder has two scripts that work well together:
 
 - **`check_news.py`**: generate a list of news/search results (Markdown or JSON).
 - **`select_blog_candidates.py`**: ask an OpenAI‑compatible LLM to pick the best blog post ideas from that news list, using your prior posts as context.
+- **`finalize_blog_candidates.py`**: crawl the selected sources, score novelty/relevance, and generate final per-candidate blog summaries + a report.
 
 ---
 
@@ -130,5 +131,56 @@ Notes:
 
 - The script auto-fills `source_title`/`url`/`summary` arrays from the original news items to keep them consistent.
 - For convenience/back-compat, it also keeps `item_id` as the first entry of `item_ids`.
+
+---
+
+## 3) Finalize candidates (`finalize_blog_candidates.py`)
+
+This step consumes `selected.json` and for each candidate:
+
+- Dedupes its `url/link` list
+- Fetches/crawls the pages (best-effort; supports PDFs)
+- Calls the LLM to generate:
+  - A **blog-ready summary** (200–500 words)
+  - **Novelty** score (0–10)
+  - **Relevance** score (0–10) based on keyword matching
+  - A short summary (~20 words)
+- Writes:
+  - `blog_candidate_<slug>.md` (one per candidate)
+  - `final_report.json` (scores + pointers to markdown files)
+
+### Keyword configuration (relevance scoring)
+
+The script reads keywords from:
+
+- **`BLOG_RELEVANCE_KEYWORDS`** (preferred), else falls back to `TEXT_KEYWORDS` / `NEWS_KEYWORDS` / `KEYWORDS`.
+
+Example:
+
+```dotenv
+BLOG_RELEVANCE_KEYWORDS=esp32, mqtt, fuzzing, tls, post-quantum, mbedtls
+```
+
+### Optional limits
+
+- **`BLOG_FINALIZE_MAX_LINKS_PER_CANDIDATE`** (default: 3)
+- **`BLOG_FINALIZE_MAX_CONTENT_CHARS`** (default: 20000)
+
+### Run it
+
+```bash
+python scripts/finalize_blog_candidates.py \
+  --selected-file output/selected.json \
+  --output-dir output/final_candidates
+```
+
+If you only want to crawl/cache sources (no LLM calls), use:
+
+```bash
+python scripts/finalize_blog_candidates.py \
+  --selected-file output/selected.json \
+  --output-dir output/final_candidates \
+  --skip-llm
+```
 
 
