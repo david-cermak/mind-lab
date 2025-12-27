@@ -271,6 +271,72 @@ def _safe_filename_from_url(url: str) -> str:
     return f"source_{h}"
 
 
+def _download_text_extension(content_type: str) -> str:
+    ct = (content_type or "").lower()
+    if "markdown" in ct:
+        return ".md"
+    return ".txt"
+
+
+def save_extracted_text_to_downloads(
+    *, out_dir: Path, url: str, text: str, content_type: str
+) -> str:
+    """
+    Persist extracted (full) text to output_dir/downloads/ and return its path as string.
+    Does nothing (returns "") if text is empty.
+    """
+    if not (text or "").strip():
+        return ""
+    downloads = out_dir / "downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    filename = _safe_filename_from_url(url) + _download_text_extension(content_type)
+    path = downloads / filename
+    # Only write if file doesn't exist yet (avoid churn)
+    if not path.exists():
+        path.write_text(text, encoding="utf-8", errors="replace")
+    return str(path)
+
+
+def save_text_next_to_file(downloaded_path: Path, text: str) -> str:
+    """
+    Save extracted text next to a downloaded binary (e.g. PDF).
+
+    Example:
+      /.../downloads/source_<hash>.pdf -> /.../downloads/source_<hash>.txt
+    """
+    if not (text or "").strip():
+        return ""
+    txt_path = downloaded_path.with_suffix(".txt")
+    if not txt_path.exists():
+        txt_path.write_text(text, encoding="utf-8", errors="replace")
+    return str(txt_path)
+
+
+def format_head_tail_truncation(text: str, head_chars: int, tail_chars: int) -> str:
+    """
+    Return a string containing:
+      - first head_chars
+      - truncation marker
+      - last tail_chars
+    when text is longer than head+tail.
+
+    If head_chars <= 0, returns last tail_chars (or full if tail_chars <= 0).
+    If tail_chars <= 0, returns first head_chars (or full if head_chars <= 0).
+    """
+    s = text or ""
+    if not s:
+        return ""
+    if head_chars <= 0 and tail_chars <= 0:
+        return s
+    if head_chars <= 0:
+        return s[-tail_chars:] if tail_chars > 0 else s
+    if tail_chars <= 0:
+        return s[:head_chars] if head_chars > 0 else s
+    if len(s) <= head_chars + tail_chars:
+        return s
+    return s[:head_chars] + "\n...[truncated]...\n" + s[-tail_chars:]
+
+
 def fetch_and_extract(
     url: str,
     *,
@@ -310,12 +376,14 @@ def fetch_and_extract(
             except Exception as e:
                 # Still consider the PDF "downloaded" even if text extraction fails.
                 err = str(e)
+            text_path = save_text_next_to_file(pdf_path, text) if text else ""
             return {
                 "fetched_at": fetched_at,
                 "url": u,
                 "content_type": "application/pdf",
                 "text": text,
                 "download_path": str(pdf_path),
+                **({"text_download_path": text_path} if text_path else {}),
                 **({"error": f"pdf_extract_failed: {err}"} if err else {}),
             }
         except Exception as e:
@@ -532,6 +600,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=get_int_env("BLOG_FINALIZE_SOURCES_APPEND_CHARS", 8000),
         help="Max chars of cached source text to append into markdown (default: 8000; env BLOG_FINALIZE_SOURCES_APPEND_CHARS).",
     )
+    p.add_argument(
+        "--sources-append-tail-chars",
+        type=int,
+        default=get_int_env("BLOG_FINALIZE_SOURCES_APPEND_TAIL_CHARS", 5000),
+        help="Also append the last N chars of the source text (default: 5000; env BLOG_FINALIZE_SOURCES_APPEND_TAIL_CHARS).",
+    )
     p.add_argument("--min-words", type=int, default=200, help="Minimum words for blog summary (default: 200).")
     p.add_argument("--max-words", type=int, default=500, help="Maximum words for blog summary (default: 500).")
     p.add_argument("--timeout-seconds", type=int, default=30, help="Fetch timeout per URL (default: 30).")
@@ -627,6 +701,27 @@ async def main_async(argv: list[str] | None = None) -> int:
             for i, url in enumerate(links):
                 cached = cache.get(url) or {}
                 cached_text = str(cached.get("text") or "")
+                # Backfill: for PDFs, if we already extracted text but didn't persist it to downloads/, do it now.
+                if _looks_like_pdf(url) and cached.get("download_path") and cached_text and not cached.get("text_download_path"):
+                    try:
+                        pdf_path = Path(str(cached.get("download_path")))
+                        text_path = save_text_next_to_file(pdf_path, cached_text)
+                        if text_path:
+                            cached["text_download_path"] = text_path
+                            cache[url] = cached
+                    except Exception:
+                        pass
+                # If we already have cached text but no persisted download file, backfill it.
+                if cached_text and not cached.get("download_path") and not _looks_like_pdf(url):
+                    dl = save_extracted_text_to_downloads(
+                        out_dir=out_dir,
+                        url=url,
+                        text=cached_text,
+                        content_type=str(cached.get("content_type") or ""),
+                    )
+                    if dl:
+                        cached["download_path"] = dl
+                        cache[url] = cached
 
                 if not cached_text and not cached.get("download_path"):
                     print(f"[{idx}/{len(candidates)}] Fetching {url}", file=sys.stderr)
@@ -641,6 +736,15 @@ async def main_async(argv: list[str] | None = None) -> int:
                             "text": str(ex.get("text") or ""),
                             **({"error": str(ex.get("error"))} if ex.get("error") else {}),
                         }
+                        # Persist full extracted HTML text to downloads/ like PDFs
+                        dl = save_extracted_text_to_downloads(
+                            out_dir=out_dir,
+                            url=url,
+                            text=str(fetched.get("text") or ""),
+                            content_type=str(fetched.get("content_type") or ""),
+                        )
+                        if dl:
+                            fetched["download_path"] = dl
                     cache[url] = fetched
                     cached = fetched
                     cached_text = str(cached.get("text") or "")
@@ -721,6 +825,7 @@ async def main_async(argv: list[str] | None = None) -> int:
                 cached_ct = str(cached.get("content_type") or "")
                 cached_err = str(cached.get("error") or "")
                 download_path = str(cached.get("download_path") or "")
+                text_download_path = str(cached.get("text_download_path") or "")
                 md_lines.append(f"## Sources ({i})")
                 md_lines.append("")
                 md_lines.append(f"- **URL**: {s.get('url','')}")
@@ -728,6 +833,8 @@ async def main_async(argv: list[str] | None = None) -> int:
                     md_lines.append(f"- **Content-Type**: {cached_ct}")
                 if download_path:
                     md_lines.append(f"- **Downloaded file**: `{download_path}`")
+                if text_download_path:
+                    md_lines.append(f"- **Extracted text**: `{text_download_path}`")
                 if cached_err:
                     md_lines.append(f"- **Error**: {cached_err}")
                 md_lines.append("")
@@ -735,9 +842,11 @@ async def main_async(argv: list[str] | None = None) -> int:
                     md_lines.append("(No cached text.)")
                     md_lines.append("")
                     continue
-                append_text = cached_text
-                if args.sources_append_chars > 0 and len(append_text) > args.sources_append_chars:
-                    append_text = append_text[: args.sources_append_chars] + "\n...[truncated]"
+                append_text = format_head_tail_truncation(
+                    cached_text,
+                    head_chars=int(args.sources_append_chars),
+                    tail_chars=int(args.sources_append_tail_chars),
+                )
                 md_lines.append("```text")
                 md_lines.append(append_text)
                 md_lines.append("```")
@@ -836,6 +945,27 @@ def main(argv: list[str] | None = None) -> int:
             for i, url in enumerate(links):
                 cached = cache.get(url) or {}
                 cached_text = str(cached.get("text") or "")
+                # Backfill: for PDFs, if we already extracted text but didn't persist it to downloads/, do it now.
+                if _looks_like_pdf(url) and cached.get("download_path") and cached_text and not cached.get("text_download_path"):
+                    try:
+                        pdf_path = Path(str(cached.get("download_path")))
+                        text_path = save_text_next_to_file(pdf_path, cached_text)
+                        if text_path:
+                            cached["text_download_path"] = text_path
+                            cache[url] = cached
+                    except Exception:
+                        pass
+                # If we already have cached text but no persisted download file, backfill it.
+                if cached_text and not cached.get("download_path") and not _looks_like_pdf(url):
+                    dl = save_extracted_text_to_downloads(
+                        out_dir=out_dir,
+                        url=url,
+                        text=cached_text,
+                        content_type=str(cached.get("content_type") or ""),
+                    )
+                    if dl:
+                        cached["download_path"] = dl
+                        cache[url] = cached
                 if not cached_text and not cached.get("download_path"):
                     print(f"[{idx}/{len(candidates)}] Fetching {url}", file=sys.stderr)
                     if _looks_like_pdf(url):
@@ -851,6 +981,14 @@ def main(argv: list[str] | None = None) -> int:
                                 "content_type": ctype or "text/html",
                                 "text": text,
                             }
+                            dl = save_extracted_text_to_downloads(
+                                out_dir=out_dir,
+                                url=url,
+                                text=text,
+                                content_type=str(fetched.get("content_type") or ""),
+                            )
+                            if dl:
+                                fetched["download_path"] = dl
                         except Exception as e:
                             fetched = {
                                 "fetched_at": int(time.time()),
@@ -933,6 +1071,7 @@ def main(argv: list[str] | None = None) -> int:
                 cached_ct = str(cached.get("content_type") or "")
                 cached_err = str(cached.get("error") or "")
                 download_path = str(cached.get("download_path") or "")
+                text_download_path = str(cached.get("text_download_path") or "")
                 md_lines.append(f"## Sources ({i})")
                 md_lines.append("")
                 md_lines.append(f"- **URL**: {s.get('url','')}")
@@ -940,6 +1079,8 @@ def main(argv: list[str] | None = None) -> int:
                     md_lines.append(f"- **Content-Type**: {cached_ct}")
                 if download_path:
                     md_lines.append(f"- **Downloaded file**: `{download_path}`")
+                if text_download_path:
+                    md_lines.append(f"- **Extracted text**: `{text_download_path}`")
                 if cached_err:
                     md_lines.append(f"- **Error**: {cached_err}")
                 md_lines.append("")
@@ -947,9 +1088,11 @@ def main(argv: list[str] | None = None) -> int:
                     md_lines.append("(No cached text.)")
                     md_lines.append("")
                     continue
-                append_text = cached_text
-                if args.sources_append_chars > 0 and len(append_text) > args.sources_append_chars:
-                    append_text = append_text[: args.sources_append_chars] + "\n...[truncated]"
+                append_text = format_head_tail_truncation(
+                    cached_text,
+                    head_chars=int(args.sources_append_chars),
+                    tail_chars=int(args.sources_append_tail_chars),
+                )
                 md_lines.append("```text")
                 md_lines.append(append_text)
                 md_lines.append("```")
