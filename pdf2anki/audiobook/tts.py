@@ -31,6 +31,10 @@ else:
 # Using 4500 bytes as a safe limit to account for encoding overhead
 MAX_BYTES_PER_REQUEST = 4500
 
+# Neural2 voices have a much lower character limit (~500-600 chars)
+# Using 500 characters as a conservative limit for Neural2 voices
+MAX_CHARS_PER_REQUEST = 500
+
 
 def get_byte_length(text: str) -> int:
     """Get UTF-8 byte length of text."""
@@ -47,16 +51,21 @@ def load_metadata(metadata_path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def split_text_for_tts(text: str, max_bytes: int = MAX_BYTES_PER_REQUEST) -> List[str]:
+def split_text_for_tts(
+    text: str, 
+    max_bytes: int = MAX_BYTES_PER_REQUEST,
+    max_chars: int = MAX_CHARS_PER_REQUEST
+) -> List[str]:
     """
-    Split text into chunks suitable for TTS based on byte length.
+    Split text into chunks suitable for TTS based on byte length and character length.
     Tries to split at sentence boundaries to avoid cutting mid-sentence.
     
-    Note: Google TTS limit is 5000 bytes, not characters. UTF-8 characters
-    (especially Czech with diacritics) can be multi-byte.
+    Note: Google TTS limit is 5000 bytes, but Neural2 voices have a lower character
+    limit (~500-600 chars). UTF-8 characters (especially Czech with diacritics) can be multi-byte.
     """
     text_bytes = get_byte_length(text)
-    if text_bytes <= max_bytes:
+    text_chars = len(text)
+    if text_bytes <= max_bytes and text_chars <= max_chars:
         return [text]
     
     chunks = []
@@ -71,11 +80,17 @@ def split_text_for_tts(text: str, max_bytes: int = MAX_BYTES_PER_REQUEST) -> Lis
             continue
         
         para_bytes = get_byte_length(para)
+        para_chars = len(para)
         current_bytes = get_byte_length(current_chunk) if current_chunk else 0
+        current_chars = len(current_chunk) if current_chunk else 0
         separator_bytes = get_byte_length("\n\n")
+        separator_chars = len("\n\n")
         
-        # If adding this paragraph would exceed limit
-        if current_chunk and current_bytes + separator_bytes + para_bytes > max_bytes:
+        # If adding this paragraph would exceed either limit
+        if current_chunk and (
+            current_bytes + separator_bytes + para_bytes > max_bytes or
+            current_chars + separator_chars + para_chars > max_chars
+        ):
             # Save current chunk
             if current_chunk:
                 chunks.append(current_chunk.strip())
@@ -88,7 +103,7 @@ def split_text_for_tts(text: str, max_bytes: int = MAX_BYTES_PER_REQUEST) -> Lis
                 current_chunk = para
         
         # If single paragraph exceeds limit, split by sentences
-        if get_byte_length(current_chunk) > max_bytes:
+        while get_byte_length(current_chunk) > max_bytes or len(current_chunk) > max_chars:
             sentences = current_chunk.split(". ")
             temp_chunk = ""
             
@@ -102,10 +117,62 @@ def split_text_for_tts(text: str, max_bytes: int = MAX_BYTES_PER_REQUEST) -> Lis
                     sentence += "."
                 
                 sentence_bytes = get_byte_length(sentence)
+                sentence_chars = len(sentence)
                 temp_bytes = get_byte_length(temp_chunk) if temp_chunk else 0
+                temp_chars = len(temp_chunk) if temp_chunk else 0
                 space_bytes = get_byte_length(" ")
+                space_chars = len(" ")
                 
-                if temp_chunk and temp_bytes + space_bytes + sentence_bytes > max_bytes:
+                # If single sentence exceeds limit, split by commas
+                if sentence_chars > max_chars or sentence_bytes > max_bytes:
+                    # Split this long sentence by commas
+                    parts = sentence.split(", ")
+                    for part in parts:
+                        part = part.strip()
+                        if not part:
+                            continue
+                        # Add comma if it was removed (except for last part)
+                        if part != parts[-1] and not part.endswith(","):
+                            part += ","
+                        
+                        part_bytes = get_byte_length(part)
+                        part_chars = len(part)
+                        temp_bytes = get_byte_length(temp_chunk) if temp_chunk else 0
+                        temp_chars = len(temp_chunk) if temp_chunk else 0
+                        space_bytes = get_byte_length(" ")
+                        space_chars = len(" ")
+                        
+                        if temp_chunk and (
+                            temp_bytes + space_bytes + part_bytes > max_bytes or
+                            temp_chars + space_chars + part_chars > max_chars
+                        ):
+                            if temp_chunk:
+                                chunks.append(temp_chunk.strip())
+                            temp_chunk = part
+                        else:
+                            if temp_chunk:
+                                temp_chunk += " " + part
+                            else:
+                                temp_chunk = part
+                    
+                    # If still too long after comma split, force split at character limit
+                    if temp_chunk and (len(temp_chunk) > max_chars or get_byte_length(temp_chunk) > max_bytes):
+                        while len(temp_chunk) > max_chars or get_byte_length(temp_chunk) > max_bytes:
+                            # Find a good split point (space or punctuation near the limit)
+                            split_pos = max_chars
+                            for i in range(max_chars - 50, max_chars):
+                                if i < len(temp_chunk) and temp_chunk[i] in [' ', ',', '.', ';']:
+                                    split_pos = i + 1
+                                    break
+                            
+                            chunks.append(temp_chunk[:split_pos].strip())
+                            temp_chunk = temp_chunk[split_pos:].strip()
+                    continue
+                
+                if temp_chunk and (
+                    temp_bytes + space_bytes + sentence_bytes > max_bytes or
+                    temp_chars + space_chars + sentence_chars > max_chars
+                ):
                     if temp_chunk:
                         chunks.append(temp_chunk.strip())
                     temp_chunk = sentence
@@ -116,12 +183,62 @@ def split_text_for_tts(text: str, max_bytes: int = MAX_BYTES_PER_REQUEST) -> Lis
                         temp_chunk = sentence
             
             current_chunk = temp_chunk
+            # If still too long after sentence splitting, force split to avoid infinite loop
+            if get_byte_length(current_chunk) > max_bytes or len(current_chunk) > max_chars:
+                # Force split at character limit
+                while len(current_chunk) > max_chars or get_byte_length(current_chunk) > max_bytes:
+                    # Find a good split point (space or punctuation near the limit)
+                    split_pos = max_chars
+                    for i in range(max(max_chars - 100, 0), max_chars):
+                        if i < len(current_chunk) and current_chunk[i] in [' ', ',', '.', ';', '\n']:
+                            split_pos = i + 1
+                            break
+                    
+                    chunks.append(current_chunk[:split_pos].strip())
+                    current_chunk = current_chunk[split_pos:].strip()
+                break
+            else:
+                break
     
-    # Add remaining chunk
+    # Add remaining chunk, but ensure it doesn't exceed limits
     if current_chunk:
-        chunks.append(current_chunk.strip())
+        # Final safety check - if still too long, force split
+        while len(current_chunk) > max_chars or get_byte_length(current_chunk) > max_bytes:
+            split_pos = max_chars
+            # Try to find a good split point
+            for i in range(max_chars - 50, max_chars):
+                if i < len(current_chunk) and current_chunk[i] in [' ', ',', '.', ';', '\n']:
+                    split_pos = i + 1
+                    break
+            
+            chunks.append(current_chunk[:split_pos].strip())
+            current_chunk = current_chunk[split_pos:].strip()
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
     
-    return chunks
+    # Final validation: ensure no chunk exceeds limits (safety check)
+    validated_chunks = []
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        
+        while len(chunk) > max_chars or get_byte_length(chunk) > max_bytes:
+            # Force split if somehow a chunk still exceeds limits
+            split_pos = max_chars
+            for i in range(max(max_chars - 100, 0), max_chars):
+                if i < len(chunk) and chunk[i] in [' ', ',', '.', ';', '\n']:
+                    split_pos = i + 1
+                    break
+            
+            validated_chunks.append(chunk[:split_pos].strip())
+            chunk = chunk[split_pos:].strip()
+        
+        if chunk:
+            validated_chunks.append(chunk)
+    
+    return validated_chunks
 
 
 def synthesize_chunk(
@@ -232,11 +349,18 @@ def synthesize_narrative(
             )
             audio_chunks.append(audio_data)
         except Exception as e:
+            chunk_chars = len(chunk_text)
+            chunk_bytes = get_byte_length(chunk_text)
             logger.error(f"    Error synthesizing chunk {i}: {e}")
+            logger.error(f"    Chunk {i} details: {chunk_chars:,} chars, {chunk_bytes:,} bytes")
+            logger.error(f"    First 200 chars of failed chunk: {chunk_text[:200]!r}")
             return {
                 "success": False,
                 "error": str(e),
                 "chunks_processed": i - 1,
+                "failed_chunk": i,
+                "failed_chunk_chars": chunk_chars,
+                "failed_chunk_bytes": chunk_bytes,
             }
     
     # Combine audio chunks

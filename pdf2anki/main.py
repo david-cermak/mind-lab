@@ -16,12 +16,17 @@ from pdf2anki.analysis import strategy, vision
 from pdf2anki.generators import text, occlusion
 from pdf2anki.utils.anki_db import DeckBuilder
 
-# Load .env file from pdf2anki directory or current directory
+# Load .env file from pdf2anki directory, project root, or current directory
 env_path = Path(__file__).parent / ".env"
 if env_path.exists():
-    load_dotenv(env_path)
+    load_dotenv(env_path, override=True)
 else:
-    load_dotenv()  # Fallback to current directory
+    # Try project root (one level up from pdf2anki)
+    project_root_env = Path(__file__).parent.parent / ".env"
+    if project_root_env.exists():
+        load_dotenv(project_root_env, override=True)
+    else:
+        load_dotenv(override=True)  # Fallback to current directory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -47,7 +52,8 @@ def main():
 
     args = parser.parse_args()
     
-    # Set environment variables for downstream modules
+    # Set environment variables for downstream modules if provided via CLI
+    # (load_dotenv() already loaded .env file values into os.environ)
     if args.api_key:
         os.environ["OPENAI_API_KEY"] = args.api_key
     if args.base_url:
@@ -102,12 +108,13 @@ def main():
                 
                 logging.info(f"Generating {item.get('estimated_cards', 1)} text cards for page {page_num}")
                 
+                # Use args if provided, otherwise let function use environment variables
                 cards = text.generate_text_cards(
                     page_text, 
                     num_cards=item.get("estimated_cards", 1),
                     model=args.llm_model,
-                    base_url=args.base_url,
-                    api_key=args.api_key
+                    base_url=args.base_url or os.getenv("PDF2ANKI_BASE_URL"),
+                    api_key=args.api_key or os.getenv("OPENAI_API_KEY")
                 )
                 
                 for c in cards: 
@@ -185,8 +192,8 @@ def main():
                         page_text,
                         ocr_tokens,
                         model=args.vision_model,
-                        base_url=args.base_url,
-                        api_key=args.api_key,
+                        base_url=args.base_url or os.getenv("PDF2ANKI_BASE_URL"),
+                        api_key=args.api_key or os.getenv("OPENAI_API_KEY"),
                     )
                     
                     if "error" not in vision_result:

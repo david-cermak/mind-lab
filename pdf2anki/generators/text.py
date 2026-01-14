@@ -27,9 +27,21 @@ def generate_text_cards(
     if OpenAI is None:
         raise RuntimeError("openai package not installed")
 
+    # Resolve base_url and api_key with proper fallback
+    final_base_url = base_url or os.environ.get("PDF2ANKI_BASE_URL") or os.getenv("PDF2ANKI_BASE_URL")
+    final_api_key = api_key or os.environ.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    
+    if not final_api_key:
+        raise ValueError("OPENAI_API_KEY is required. Set it via --api-key, environment variable, or .env file")
+    if not final_base_url:
+        raise ValueError("PDF2ANKI_BASE_URL is required. Set it via --base-url, environment variable, or .env file")
+    
+    # Normalize base_url: remove trailing slash, OpenAI client will handle /v1
+    final_base_url = final_base_url.rstrip("/")
+    
     client = OpenAI(
-        base_url=base_url or os.environ.get("PDF2ANKI_BASE_URL"), 
-        api_key=api_key or os.environ.get("OPENAI_API_KEY")
+        base_url=final_base_url,
+        api_key=final_api_key
     )
     
     prompt = (

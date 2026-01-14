@@ -326,6 +326,39 @@ python -m pdf2anki.audiobook.combiner --help
 python -m pdf2anki.audiobook.tts --help
 ```
 
+## Automated Batch Processing
+
+For processing multiple PDFs automatically, use the batch processing script:
+
+```bash
+# Process all PDFs in pdfs/ directory
+./pdf2anki/audiobook/process_all_pdfs.sh \
+  --pdfs-dir pdfs \
+  --output-dir output \
+  --language cs \
+  --language-code cs-CZ
+
+# Or with custom settings
+./pdf2anki/audiobook/process_all_pdfs.sh \
+  --pdfs-dir pdfs \
+  --output-dir output \
+  --chunk-size 50000 \
+  --language cs \
+  --style educational \
+  --language-code cs-CZ \
+  --ssml-gender NEUTRAL \
+  --combine-format single
+```
+
+The script will:
+- Process each PDF in the specified directory
+- Create separate output directories for each PDF (e.g., `output/biology/`, `output/physics/`)
+- Run all stages sequentially
+- Exit immediately if any step fails
+- Show progress for each PDF
+
+See `process_all_pdfs.sh --help` for all available options.
+
 ## Complete Example
 
 ```bash
@@ -472,7 +505,4 @@ After generating audio files, you can:
    python -m pdf2anki.audiobook.combiner --output-format chapters
    ```
 
-4. **Use different TTS voices** by specifying `--voice-name` with a specific voice identifier
-
-5. **Adjust audio quality** by changing `--audio-encoding` (MP3 for compatibility, LINEAR16 for highest quality)
-
+4. **Use different TTS voices** by specifying `--voice-name` with a specific voice identifier5. **Adjust audio quality** by changing `--audio-encoding` (MP3 for compatibility, LINEAR16 for highest quality)
