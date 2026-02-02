@@ -227,6 +227,37 @@ def get_config(topic: str | None = None) -> str:
     return final_topic
 
 
+def load_excluded_links(exclude_file: Path | None = None) -> set[str]:
+    """
+    Load excluded links from exclude_links.txt file.
+    
+    Args:
+        exclude_file: Path to the exclude links file. If None, uses exclude_links.txt
+                     in the same directory as this script.
+    
+    Returns:
+        Set of excluded URLs (normalized, stripped)
+    """
+    if exclude_file is None:
+        exclude_file = Path(__file__).parent / "exclude_links.txt"
+    
+    excluded: set[str] = set()
+    
+    if not exclude_file.exists():
+        return excluded
+    
+    try:
+        with open(exclude_file, "r", encoding="utf-8") as f:
+            for line in f:
+                url = line.strip()
+                if url and not url.startswith("#"):
+                    excluded.add(url)
+    except Exception as e:
+        print(f"Warning: Could not load excluded links from {exclude_file}: {e}", file=sys.stderr)
+    
+    return excluded
+
+
 def search_news(topic: str, max_results: int = 5, do_news: bool = True, max_retries: int = 3, retry_delay: int = 5) -> list[dict]:
     """
     Search for news articles on the given topic using DuckDuckGo.
@@ -308,6 +339,7 @@ def search_with_keyword_combinations(
     - It keeps querying until `target_results` unique results are collected
       (or all combinations are exhausted).
     - Each result is annotated with the query that produced it.
+    - Results with URLs in exclude_links.txt are filtered out.
     
     Returns a list of dicts with at least:
         - title
@@ -319,6 +351,11 @@ def search_with_keyword_combinations(
     """
     if not text_keywords and not news_keywords:
         return []
+    
+    # Load excluded links once at the start
+    excluded_links = load_excluded_links()
+    if excluded_links:
+        print(f"Loaded {len(excluded_links)} excluded link(s) from exclude_links.txt", file=sys.stderr)
     
     # Work on copies so we can shuffle safely
     base_text_keywords = list(text_keywords)
@@ -450,7 +487,17 @@ def search_with_keyword_combinations(
             print(f"Error searching for '{query_text}': {e}", file=sys.stderr)
             continue
         
+        # Filter out excluded links
+        filtered_results = []
         for item in raw_results:
+            url = item.get("href") or item.get("url")
+            if not url:
+                continue
+            if url in excluded_links:
+                continue
+            filtered_results.append(item)
+        
+        for item in filtered_results:
             url = item.get("href") or item.get("url")
             if not url:
                 continue
